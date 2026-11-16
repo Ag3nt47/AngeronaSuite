@@ -10,7 +10,7 @@ import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 
 import pytest
 
@@ -18,10 +18,22 @@ from angerona.app import AngeronaApp
 from angerona.core import ollama_lifecycle as ai
 from angerona.core import process_exit
 from angerona.resilience import shutdown_token as token
-from angerona.resilience import supervisor
+from angerona.resilience import supervisor, source_stop
 from test_ollama_owned_retirement import (
     inert_child_factory as inert_child_factory, owned as owned,
 )
+
+
+@pytest.fixture
+def legacy_storage_authority(monkeypatch):
+    """These two tests explicitly exercise the user-storage legacy token domain."""
+    monkeypatch.setattr(token, "_admin_authority", lambda: None)
+
+
+@pytest.fixture
+def protected_app_authority(monkeypatch):
+    """Protected-flow fakes must not infer their profile from this source host."""
+    monkeypatch.setattr(source_stop, "source_runtime_admitted", lambda: False)
 
 
 def test_operator_stop_survives_age_and_requires_signed_domain(tmp_path, monkeypatch):
@@ -46,7 +58,7 @@ def test_stop_parser_is_bounded_and_rejects_wrong_shapes(tmp_path, raw):
     assert token.is_standdown_requested(key=b"k" * 32, path=path) is False
 
 
-def test_startup_storage_stop_check_is_readonly_and_ignores_environment(tmp_path, monkeypatch):
+def test_startup_storage_stop_check_is_readonly_and_ignores_environment(tmp_path, monkeypatch, legacy_storage_authority):
     root = tmp_path / "trusted"
     assert not token.standdown_active_for_storage(root)
     assert not root.exists()
@@ -61,7 +73,7 @@ def test_startup_storage_stop_check_is_readonly_and_ignores_environment(tmp_path
         token.standdown_active_for_storage(root)
 
 
-def test_explicit_storage_resume_deletes_only_authenticated_command(tmp_path, monkeypatch):
+def test_explicit_storage_resume_deletes_only_authenticated_command(tmp_path, monkeypatch, legacy_storage_authority):
     root = tmp_path / "trusted"
     token.clear_standdown_for_storage(root)
     assert not root.exists()
@@ -131,15 +143,29 @@ def test_manager_request_stop_still_closes_heartbeat_and_reader_once(monkeypatch
     monkeypatch.setattr(manager.hb, "HeartbeatWriter", lambda _name: SimpleNamespace(
         close=lambda: calls.append("heartbeat-close"),
     ))
-    monkeypatch.setattr(manager, "ProcessSupervisor", lambda **_kwargs: SimpleNamespace(
-        request_stop=lambda: calls.append("admission-close"),
-        stop=lambda **kwargs: calls.append(("children-stop", kwargs["terminate_children"])),
-    ))
+    class ExactSupervisor:
+        def __init__(self, **_kwargs):
+            self.custody = object()
+            self.closed = False
+        def capture_retirement_custody(self):
+            return self.custody
+        def request_stop(self):
+            calls.append("admission-close")
+        def stop(self, *, terminate_children):
+            calls.append(("children-stop", terminate_children))
+            self.closed = True
+        def shutdown_retired(self, custody):
+            assert custody is self.custody
+            return self.closed
+    monkeypatch.setattr(manager, "ProcessSupervisor", ExactSupervisor)
     owner = manager.ResilienceManager(start_watchdog=False)
     owner._reader = SimpleNamespace(close=lambda: calls.append("reader-close"))
+    custody = owner.capture_retirement_custody()
+    assert owner.shutdown_retired(custody) is False
     owner.request_stop()
     owner.stop(terminate_children=True)
     owner.stop(terminate_children=True)
+    assert owner.shutdown_retired(custody) is True
     assert calls.count("heartbeat-close") == calls.count("reader-close") == 1
     assert calls.count(("children-stop", True)) == 2
     assert owner.status == "stopped"
@@ -167,7 +193,7 @@ def test_stop_during_spawn_retires_exact_child_and_tags_recovery(monkeypatch):
     assert component.restarts == 0
 
 
-def test_automatic_app_cannot_clear_stop_or_open_window(monkeypatch):
+def test_automatic_app_cannot_clear_stop_or_open_window(monkeypatch, protected_app_authority):
     app = AngeronaApp.__new__(AngeronaApp)
     monkeypatch.setenv("ANGERONA_SUPERVISED_RECOVERY", "1")
     monkeypatch.setattr(token, "is_standdown_requested", lambda: True)
@@ -178,7 +204,7 @@ def test_automatic_app_cannot_clear_stop_or_open_window(monkeypatch):
     assert calls == ["native-stop"]
 
 
-def test_inflight_automatic_app_notices_later_stop(monkeypatch):
+def test_inflight_automatic_app_notices_later_stop(monkeypatch, protected_app_authority):
     app = AngeronaApp.__new__(AngeronaApp)
     calls = []
     app._operator_stop_timer = SimpleNamespace(stop=lambda: calls.append("timer-stop"))
@@ -189,7 +215,7 @@ def test_inflight_automatic_app_notices_later_stop(monkeypatch):
     assert calls == ["timer-stop", "owned-stop"]
 
 
-def test_explicit_resume_cannot_open_when_stop_removal_fails(monkeypatch):
+def test_explicit_resume_cannot_open_when_stop_removal_fails(monkeypatch, protected_app_authority):
     app = AngeronaApp.__new__(AngeronaApp)
     monkeypatch.delenv("ANGERONA_SUPERVISED_RECOVERY", raising=False)
     calls = []
@@ -215,21 +241,33 @@ def test_adopted_shared_interpreter_with_wrong_module_cannot_be_terminated(monke
     assert sup._terminate(component) is False
 
 
-def test_prepare_stop_persists_before_cleanup_and_fences_ai(monkeypatch):
+def test_prepare_stop_persists_before_cleanup_and_fences_ai(monkeypatch, protected_app_authority):
     app = AngeronaApp.__new__(AngeronaApp)
     calls = []
-    app._resilience = SimpleNamespace(request_stop=lambda: calls.append("spawn-fence"))
+    captured = object()
+    app._resilience = SimpleNamespace(
+        capture_retirement_custody=lambda: calls.append("capture") or captured,
+        closed=False,
+        shutdown_retired=lambda custody: custody is captured and app._resilience.closed,
+        request_stop=lambda: calls.append("spawn-fence"),
+    )
     monkeypatch.setattr(token, "request_operator_stop", lambda: calls.append("persist"))
     monkeypatch.setattr(token, "signal_external_watchdog_stop", lambda: calls.append("native"))
     app.prepare_shutdown()
     assert app._shutdown_requested.is_set() and ai.ollama_blocked()
-    assert calls == ["persist", "spawn-fence", "native"]
+    assert calls == ["capture", "persist", "spawn-fence", "native"]
 
 
-def test_failed_primary_stop_write_leaves_protection_admission_open(monkeypatch):
+def test_failed_primary_stop_write_leaves_protection_admission_open(monkeypatch, protected_app_authority):
     app = AngeronaApp.__new__(AngeronaApp)
     calls = []
-    app._resilience = SimpleNamespace(request_stop=lambda: calls.append("fence"))
+    captured = object()
+    app._resilience = SimpleNamespace(
+        capture_retirement_custody=lambda: captured,
+        closed=False,
+        shutdown_retired=lambda custody: custody is captured and app._resilience.closed,
+        request_stop=lambda: calls.append("fence"),
+    )
     monkeypatch.setattr(token, "request_operator_stop", lambda: (_ for _ in ()).throw(OSError("disk full")))
     with pytest.raises(OSError):
         app.prepare_shutdown()
@@ -281,45 +319,87 @@ def test_ai_and_direct_blackbox_retire_before_blocked_lifecycle_drain(monkeypatc
         assert not worker.is_alive()
 
 
-def _inert_stop_window(calls):
+def _pump_stop_events(application, predicate, timeout=5):
+    deadline = time.monotonic() + timeout
+    while not predicate() and time.monotonic() < deadline:
+        application.processEvents()
+        time.sleep(.005)
+    assert predicate(), "Exact inert STOP worker/retirement did not settle"
+
+
+def _inert_stop_window(calls, data_dir=None):
+    from PySide6.QtWidgets import QApplication, QWidget
     from angerona.gui.main_window import MainWindow
 
-    return SimpleNamespace(
-        _termination_started=False,
-        _shutdown_prepare=lambda: calls.append("persist"),
-        _shutdown_callback=lambda: calls.append("owned-cleanup"),
-        _close_flight_instructor=lambda: None,
-        _close_spyware_guard_window=lambda: None,
-        _close_github_tools_window=lambda: None,
-        red_team_engine=SimpleNamespace(stop_and_clean=lambda: None),
-        shark_engine=SimpleNamespace(stop_and_clean=lambda: None),
-        _release_redteam_validation_lease=lambda: None,
-        _holographic_orb=SimpleNamespace(shutdown=lambda: None),
-        tray=SimpleNamespace(hide=lambda: None),
-        _terminate=lambda: calls.append("terminate"),
-        method=MainWindow._terminate,
-    )
+    application = QApplication.instance() or QApplication([])
+    window = QWidget()
+    window._fixture_application = application
+    window._termination_started = False
+    window._termination_preparing = False
+    window._operator_stop_locked = False
+    window._stop_confirmation_dialog = None
+    window._shutdown_prepare = lambda: calls.append("persist")
+    window._shutdown_callback = lambda: calls.append("owned-cleanup")
+    window._shutdown_critical = None
+    window._close_flight_instructor = lambda: None
+    window._close_spyware_guard_window = lambda: None
+    window._close_github_tools_window = lambda: None
+    window.red_team_engine = SimpleNamespace(stop_and_clean=lambda: None)
+    window.shark_engine = SimpleNamespace(stop_and_clean=lambda: None)
+    window._release_redteam_validation_lease = lambda: None
+    window._holographic_orb = SimpleNamespace(shutdown=lambda: None)
+    window.tray = SimpleNamespace(hide=lambda: None)
+    window._simulation_session = None
+    window.console = SimpleNamespace(_append=lambda _message: None)
+    window.config = SimpleNamespace(data_dir=data_dir)
+    window._terminate = lambda: calls.append("terminate")
+    window.method = MainWindow._terminate
+    for name in ("_shutdown_view_owners", "_hold_shutdown_views", "_retained_shutdown_workers",
+                 "_retained_shutdown_custody", "_operator_stop_cleanup", "_operator_stop_progress",
+                 "_operator_stop_finish", "_poll_stop_preparation", "_complete_prepared_stop",
+                 "_full_shutdown", "_set_operator_stop_locked", "_confirm_operator_stop",
+                 "_poll_stop_finalization", "_operator_stop_exit_after_retirement"):
+        setattr(window, name, MethodType(getattr(MainWindow, name), window))
+    return window
+
+
+def _dispose_stop_window(window):
+    from PySide6.QtCore import QCoreApplication, QEvent
+    preparation = getattr(window, "_operator_stop_preparation", None)
+    if preparation is not None:
+        preparation.thread.join(3)
+        assert not preparation.thread.is_alive()
+    for name in ("_operator_stop_prepare_timer", "_operator_stop_finalize_timer"):
+        timer = getattr(window, name, None)
+        if timer is not None:
+            timer.stop()
+    retirement = getattr(window, "_operator_stop_retirement", None)
+    if retirement is not None:
+        _pump_stop_events(window._fixture_application, lambda: retirement._done)
+        workers = [row.worker for row in retirement._retained.values()]
+        workers.append(retirement._diagnostic_thread)
+        for worker in workers:
+            if isinstance(worker, threading.Thread) and worker.ident is not None:
+                worker.join(3)
+                assert not worker.is_alive()
+    question = getattr(window, "_stop_confirmation_dialog", None)
+    if question is not None:
+        question.set_failure("")
+        question.close()
+    application = window._fixture_application
+    window.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    application.processEvents()
 
 
 def test_dashboard_stop_runs_app_owned_callback_before_own_exit(monkeypatch, tmp_path):
-    from types import MethodType
     from PySide6 import QtWidgets
-    from PySide6.QtCore import QCoreApplication, QEvent
-    from angerona.gui import action_worker, breach_display, live_debug_panel, main_window
+    from angerona.gui import action_worker, breach_display, live_debug_panel
 
-    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     calls = []
-    window = QtWidgets.QWidget()
-    window.config = SimpleNamespace(data_dir=tmp_path)
-    for name, value in vars(_inert_stop_window(calls)).items():
-        setattr(window, name, value)
+    window = _inert_stop_window(calls, tmp_path)
+    application = window._fixture_application
     window._shutdown_critical = lambda: calls.append("critical-cleanup")
-    window._simulation_session = None
-    window.console = SimpleNamespace(_append=lambda _message: None)
-    for name in ("_shutdown_view_owners", "_hold_shutdown_views", "_retained_shutdown_workers",
-                 "_retained_shutdown_custody", "_operator_stop_cleanup",
-                 "_operator_stop_progress", "_operator_stop_finish"):
-        setattr(window, name, MethodType(getattr(main_window.MainWindow, name), window))
     assert not action_worker.active_finite_actions()
     assert not breach_display.active_report_exports()
     assert not live_debug_panel.active_live_debug_streams()
@@ -330,73 +410,70 @@ def test_dashboard_stop_runs_app_owned_callback_before_own_exit(monkeypatch, tmp
     monkeypatch.setattr(process_exit, "exit_after_operator_shutdown", lambda: calls.append(("exit", 0)))
     try:
         window.method(window)
-        deadline = time.monotonic() + 5
-        while not window._operator_stop_retirement._done and time.monotonic() < deadline:
-            app.processEvents()
-            time.sleep(.005)
-        assert window._operator_stop_retirement._done
+        _pump_stop_events(application, lambda: hasattr(window, "_operator_stop_retirement"))
+        assert window._operator_stop_preparation.retired()
+        _pump_stop_events(application, lambda: window._operator_stop_retirement._done)
         assert window._operator_stop_result["state"] == "retired"
         assert window._operator_stop_result["diagnostic_persisted"] is True
         assert calls == ["persist", "critical-cleanup", "owned-cleanup", "qt-quit", ("exit", 0)]
     finally:
-        retirement = getattr(window, "_operator_stop_retirement", None)
-        if retirement is not None:
-            workers = [row.worker for row in retirement._retained.values()]
-            workers.append(retirement._diagnostic_thread)
-            for worker in workers:
-                if worker is not None and worker.ident is not None:
-                    worker.join(3)
-                    assert not worker.is_alive()
-        window.deleteLater()
-        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        _dispose_stop_window(window)
 
 
 def test_dashboard_does_not_exit_if_authenticated_stop_cannot_be_saved(monkeypatch):
-    from PySide6.QtWidgets import QMessageBox
-
     calls = []
     window = _inert_stop_window(calls)
     window._shutdown_prepare = lambda: (_ for _ in ()).throw(OSError("fixture"))
-    monkeypatch.setattr(QMessageBox, "critical", lambda *_a: calls.append("stop-error"))
     monkeypatch.setattr(process_exit, "exit_after_operator_shutdown", lambda: pytest.fail("unrecorded exit"))
-    window.method(window)
-    assert calls == ["stop-error"] and not window._termination_started
+    try:
+        window.method(window)
+        _pump_stop_events(window._fixture_application, lambda: not window._termination_preparing)
+        assert window._operator_stop_preparation.retired()
+        assert calls == [] and not window._termination_started
+        assert "preparation failed" in window._stop_confirmation_dialog.message_label.text()
+        assert window._stop_confirmation_dialog.cancel_button.isEnabled()
+    finally:
+        _dispose_stop_window(window)
 
 
 def test_callback_free_dashboard_also_persists_before_ai_fence(monkeypatch):
-    from PySide6.QtWidgets import QMessageBox
-
     calls = []
     window = _inert_stop_window(calls)
     window._shutdown_prepare = None
     monkeypatch.setattr(ai, "begin_ollama_shutdown", lambda: pytest.fail("unrecorded AI fence"))
     monkeypatch.setattr(token, "request_operator_stop", lambda: (_ for _ in ()).throw(OSError("full")))
-    monkeypatch.setattr(QMessageBox, "critical", lambda *_a: calls.append("stop-error"))
     monkeypatch.setattr(process_exit, "exit_after_operator_shutdown", lambda: pytest.fail("unrecorded exit"))
-    window.method(window)
-    assert calls == ["stop-error"]
+    try:
+        window.method(window)
+        _pump_stop_events(window._fixture_application, lambda: not window._termination_preparing)
+        assert window._operator_stop_preparation.retired()
+        assert calls == [] and not window._termination_started
+        assert "preparation failed" in window._stop_confirmation_dialog.message_label.text()
+    finally:
+        _dispose_stop_window(window)
 
 
 def test_red_stop_never_discovers_or_kills_unrelated_python(monkeypatch):
     import psutil
-    from PySide6.QtCore import QCoreApplication, QEvent
-    from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QDialog, QApplication
     from angerona.gui.main_window import MainWindow
 
-    app = QApplication.instance() or QApplication([])
     calls = []
-    window = QWidget()
-    for name, value in vars(_inert_stop_window(calls)).items():
-        setattr(window, name, value)
-    monkeypatch.setattr(QMessageBox, "exec", lambda *_a: QMessageBox.Yes)
+    window = _inert_stop_window(calls)
+    monkeypatch.setattr(QDialog, "exec", lambda *_a: pytest.fail("STOP opened a nested modal event loop"))
     monkeypatch.setattr(psutil, "process_iter", lambda *_a: pytest.fail("broad process discovery"))
     try:
         MainWindow._full_shutdown(window)
+        question = window._stop_confirmation_dialog
+        assert question.isVisible() and question.windowModality() == Qt.NonModal
+        assert QApplication.activeModalWidget() is None
+        assert calls == [] and not question.stop_button.isEnabled()
+        question.confirm_stop.setChecked(True)
+        question.stop_button.click()
         assert calls == ["terminate"]
     finally:
-        window.deleteLater()
-        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
-        app.processEvents()
+        _dispose_stop_window(window)
 
 
 def test_shutdown_unloads_only_resident_configured_models_on_fake_server(monkeypatch):
@@ -560,7 +637,7 @@ def test_supervisor_stop_retires_venv_redirector_and_actual_child_tree(tmp_path)
     script.write_text(
         "import pathlib,subprocess,sys,time\n"
         "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'])\n"
-        f"pathlib.Path({str(marker)!r}).write_text(str(p.pid))\n"
+        f"m=pathlib.Path({str(marker)!r});t=m.with_name(m.name+'.pending');t.write_text(str(p.pid));t.replace(m)\n"
         "time.sleep(30)\n"
     )
     sup = supervisor.ProcessSupervisor()

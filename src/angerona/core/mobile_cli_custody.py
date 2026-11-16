@@ -17,6 +17,7 @@ from angerona.core.windows_child_job import OwnedWindowsChild, WindowsChildJob
 _LOCK = threading.RLock()
 _LAUNCH = threading.Lock()
 _STOP = threading.Event()
+_OPERATOR_STOP_SCOPE = None
 _ACTIVE: dict[int, object] = {}
 _CALLS: dict[int, object] = {}
 _HOLDS: dict[int, tuple[object, str, bool]] = {}
@@ -56,6 +57,31 @@ def signal_cli_custody_snapshot() -> dict:
                 "scope": "Signal CLI owned invocations only; no recipient-delivery attestation"}
 
 
+def signal_retirement_proven_memory() -> bool:
+    """Fresh, nonblocking ownership proof; no I/O, process query or lock wait.
+
+    An executable/file close hold alone fences Signal's capability, while any
+    active invocation, full-call preflight or unknown external tree holds STOP.
+    """
+    if not _LOCK.acquire(blocking=False):
+        return False
+    try:
+        if (not isinstance(_STOP, threading.Event) or not _STOP.is_set()
+                or type(_ACTIVE) is not dict or type(_CALLS) is not dict
+                or type(_HOLDS) is not dict or _ACTIVE or _CALLS):
+            return False
+        for hold in _HOLDS.values():
+            if (type(hold) is not tuple or len(hold) != 3
+                    or hold[1] not in {"invocation", "executable-pin"}
+                    or type(hold[2]) is not bool or hold[2]):
+                return False
+        return True
+    except Exception:
+        return False
+    finally:
+        _LOCK.release()
+
+
 def begin_signal_call() -> object:
     """Cover executable preflight through its final pin close, including gaps."""
     token = object()
@@ -81,17 +107,32 @@ def request_signal_stop() -> None:
             owner.cancel.set()
 
 
+def request_operator_signal_stop() -> None:
+    """Latch an already-authorized suite STOP for this exact invocation scope.
+
+    App calls this only after its source/protected STOP command is accepted. It
+    grants no send/message authority and performs no native work on the caller.
+    """
+    global _OPERATOR_STOP_SCOPE
+    with _LOCK:
+        _OPERATOR_STOP_SCOPE = (_STOP, _ACTIVE)
+    request_signal_stop()
+
+
 def resume_signal_admission() -> bool:
+    global _OPERATOR_STOP_SCOPE
     with _LOCK:
         if _ACTIVE or _CALLS or _HOLDS:
             return False
         _STOP.clear()
+        _OPERATOR_STOP_SCOPE = None
         return True
 
 
 class _Invocation:
     def __init__(self, timeout, max_output):
         self.cancel = threading.Event()
+        self._stop_event, self._active_registry = _STOP, _ACTIVE
         self.process = self.job = self.child = self.reader = None
         self.original_job_handle = self.original_process_handle = None
         self.captured = bytearray()
@@ -169,6 +210,14 @@ class _Invocation:
         self.check()
         return "complete"
 
+    def _operator_stop_admitted(self) -> bool:
+        with _LOCK:
+            scope = _OPERATOR_STOP_SCOPE
+            return (type(scope) is tuple and len(scope) == 2
+                    and scope[0] is self._stop_event is _STOP and _STOP.is_set()
+                    and scope[1] is self._active_registry is _ACTIVE
+                    and _ACTIVE.get(id(self)) is self)
+
     def retire(self) -> bool:
         if self.retire_attempted:
             return self.retired
@@ -176,8 +225,17 @@ class _Invocation:
         try:
             if self.process is not None:
                 if self.child is not None:
-                    self.child.prepare_tree_retirement(timeout=2.0)
-                    self.child.terminate()
+                    try:
+                        self.child.prepare_tree_retirement(timeout=2.0)
+                    except Exception:
+                        if not self._operator_stop_admitted():
+                            raise
+                        # Lost observation proof must not veto an accepted STOP
+                        # of this exact retained private Job. Proof stays lost.
+                    if self._operator_stop_admitted():
+                        self.child.terminate_for_operator_stop()
+                    else:
+                        self.child.terminate()
                 else:
                     # Assignment/resume never completed: only this exact
                     # suspended Popen object can be terminated here.

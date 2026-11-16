@@ -1,13 +1,23 @@
 # Angerona Capabilities
 
-Current development version: **v1.15.1**. This is a present-tense capability and boundary
+Current development version: **v1.15.2**. This is a present-tense capability and boundary
 summary. Operating detail is in the [online Master Manual](docs/master-manual.md)
 or its [PDF](Angerona_Master_Manual.pdf);
 engineering evidence is in
 the [September 23 upgrade](analysis/upgrade-20260923/README.md) and historical
 [`analysis/loop/`](analysis/loop/) records.
 
-The [1.15.1 security maintenance update](docs/releases/v1.15.1.md) applies the
+The [1.15.2 source-session STOP update](docs/releases/v1.15.2.md) separates
+ordinary-user Windows shutdown from protected installed-service authority. The
+canonical launcher bridge rechecks captured source state and preserves exact
+inherited epochs; accepted STOP
+inhibits that family's recovery. The optional modeless UI lock starts unlocked
+and prevents accidental use, not same-user, administrator or kernel interference.
+Cleanup targets owned processes and retains unknown exit/close proof. The bounded
+authenticated session store preserves uncertain records. Current source notes
+supplement the older **1.15.0 Word/PDF manual** without relabelling that edition.
+
+The preceding [1.15.1 security maintenance update](docs/releases/v1.15.1.md) applies the
 reviewed recovery, authentication, source-delivery and alert reliability fixes.
 It adds an optional unsigned ordinary-user third-watchdog mode, off by default,
 with explicit reduced-protection status and signing-review settings. Signed

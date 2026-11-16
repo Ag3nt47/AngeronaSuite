@@ -233,9 +233,12 @@ class _OwnedTreeRetirement:
         if self.ready:
             try:
                 roster = self.members()
+                # A peer may honor authenticated STOP after capture and before
+                # our first dispatch. Shrinking membership preserves this cut:
+                # every original handle still has to signal during wait().
+                # New members or changed total accounting remain unproven.
                 if (self.accounting() != (self.total, len(roster))
-                        or not roster.issubset(self.roster)
-                        or (not self.dispatched and roster != self.roster)):
+                        or not roster.issubset(self.roster)):
                     raise NativeOwnershipObservationError("Retirement cut changed before termination")
             except Exception as error:
                 self.failure = type(error).__name__
@@ -394,6 +397,16 @@ class OwnedWindowsChild:
 
     def __init__(self, process, pid, job):
         self._process, self.pid, self._job = process, pid, job
+        # Exact primary ownership survives an unavailable observational cut.
+        # These references are never refreshed from a PID, registry or caller.
+        primary_job = getattr(job, "_handle", None)
+        try:
+            primary_values = int(process), int(primary_job)
+        except Exception:
+            # Existing inert/legacy owners remain constructible, but unknown
+            # primary native identity never gains operator-STOP admission.
+            primary_values = None, None
+        self._operator_stop_refs = (process, job, primary_job, pid, *primary_values)
         self._handle_lock = threading.RLock()
         self._owned_observation_lock = threading.Lock()
         self._owned_observation_epoch = 0
@@ -694,17 +707,67 @@ class OwnedWindowsChild:
             retirement = getattr(self, "_tree_retirement", None)
             if retirement is not None:
                 retirement.before_terminate()
-            self._owned_observation_epoch = getattr(self, "_owned_observation_epoch", 0) + 1
-            self._owned_observation_stopped = True
-            try:
-                self._job.terminate()
-            except BaseException:
-                if retirement is not None:
-                    retirement.epoch = self._owned_observation_epoch
-                raise
+            self._terminate_job_locked(retirement)
+
+    def _operator_stop_primary_current(self):
+        refs = getattr(self, "_operator_stop_refs", None)
+        if (type(refs) is not tuple or len(refs) != 6
+                or self._process is not refs[0] or self._job is not refs[1]
+                or type(self._job) is not WindowsChildJob
+                or self._job._handle is not refs[2] or self.pid != refs[3]
+                or self._process is None or self._job._handle is None
+                or type(self.pid) is not int or not 1 <= self.pid <= 0xffffffff):
+            raise NativeOwnershipObservationError("Operator STOP primary ownership changed or closed")
+        try:
+            values = int(self._process), int(self._job._handle)
+        except Exception:
+            raise NativeOwnershipObservationError("Operator STOP primary handle is unavailable") from None
+        if (values != refs[4:] or any(not 0 < value <= 0xffffffffffffffff for value in values)
+                or getattr(self._process, "closed", False) is True
+                or getattr(self._job._handle, "closed", False) is True):
+            raise NativeOwnershipObservationError("Operator STOP primary handle is changed or closed")
+
+    def terminate_for_operator_stop(self):
+        """Attempt STOP on this exact private Job despite observational failure.
+
+        This is deliberately separate from normal terminate/restart semantics.
+        The caller must already hold operator STOP authority. A failed cut or
+        query-close acknowledgement remains unknown after this attempt; it
+        cannot become a clean retirement receipt. Changed/closed primary owner
+        lifetimes are never repaired, reopened or accepted here.
+        """
+        with self._handle_lock:
+            self._operator_stop_primary_current()
+            retirement = getattr(self, "_tree_retirement", None)
+            if retirement is not None:
+                if type(retirement) is not _OwnedTreeRetirement or retirement.owner is not self or retirement.closed:
+                    raise NativeOwnershipObservationError("Operator STOP retirement owner is changed or closed")
+                # Epoch and original native-owner references remain mandatory;
+                # only observation failure is allowed to lose its STOP veto.
+                retirement.current()
+                try:
+                    retirement.before_terminate()
+                except NativeOwnershipObservationError:
+                    retirement.current()
+                    self._operator_stop_primary_current()
+                    retirement.ready = retirement.waited = False
+                    retirement.failure = retirement.failure or "OperatorStopObservationUnavailable"
+                    # Do not clear close_started/close_held or discard queries.
+            self._operator_stop_primary_current()
+            self._terminate_job_locked(retirement)
+
+    def _terminate_job_locked(self, retirement):
+        self._owned_observation_epoch = getattr(self, "_owned_observation_epoch", 0) + 1
+        self._owned_observation_stopped = True
+        try:
+            self._job.terminate()
+        except BaseException:
             if retirement is not None:
                 retirement.epoch = self._owned_observation_epoch
-                retirement.dispatched = True
+            raise
+        if retirement is not None:
+            retirement.epoch = self._owned_observation_epoch
+            retirement.dispatched = True
 
     kill = terminate
 

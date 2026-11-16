@@ -89,16 +89,23 @@ class AngeronaApp:
         high_water_provider: IndependentHighWater | None = None,
         startup_endpoint: str | None = None,
         process_snapshot_lifecycle=None,
+        source_stop_context=None,
     ) -> None:
         self.qt = qt
         # Production entry supplies a register-only owner before constructing
         # GUI readers. Direct/offline constructors do not create a collector.
         self._process_snapshot_lifecycle = process_snapshot_lifecycle
+        # Only __main__ supplies this after owning the desktop singleton. No
+        # source epoch is created or recovered implicitly inside the App.
+        self._source_stop_context = source_stop_context
         self._startup_endpoint = startup_endpoint
         self._dashboard_ready_scheduled = False
         self._dashboard_ready_sent = False
         self._shutdown_requested = threading.Event()
         self._shutdown_gate = threading.Lock()
+        self._shutdown_custody_gate = threading.RLock()
+        self._shutdown_fence_errors = ()
+        self._shutdown_fences_incomplete = False
         self._startup_lifecycle_lock = threading.Lock()
         self.config = Config.load()
         # Hooks arm before Config is available. Apply saved normal-write limits
@@ -362,6 +369,8 @@ class AngeronaApp:
             shutdown_prepare=self.prepare_shutdown,
             shutdown_callback=self.shutdown,
             shutdown_critical=self._shutdown_critical_owned,
+            shutdown_companions_retired=self.shutdown_companions_retired,
+            shutdown_retired_callback=self.finalize_source_stop,
         )
         # Settings consumes only this bounded, privacy-safe status provider; it
         # never receives fleet service keys or endpoint private-key material.
@@ -746,16 +755,30 @@ class AngeronaApp:
         import os
         from angerona.resilience import shutdown_token
 
-        # Only an explicit operator launch can resume after STOP. Automatic
-        # children retain the inhibit flag even if their launch was in flight.
-        if os.environ.get("ANGERONA_SUPERVISED_RECOVERY") == "1":
-            if shutdown_token.is_standdown_requested():
-                shutdown_token.signal_external_watchdog_stop()
+        source_context = getattr(self, "_source_stop_context", None)
+        if source_context is not None:
+            # Explicit source launch already rotated its epoch after singleton
+            # admission. Recovery joins that exact epoch and never clears STOP.
+            if not source_context.admission_current():
+                raise RuntimeError("The admitted source STOP session is unavailable.")
+            if not source_context.respawn_allowed():
                 return False
+            from angerona.resilience.source_stop import SOURCE_SESSION_ENV
+            os.environ[SOURCE_SESSION_ENV] = source_context.epoch
         else:
-            shutdown_token.clear_standdown(strict=True)
-            if shutdown_token.is_standdown_requested():
-                raise RuntimeError("Explicit launch could not clear the authenticated operator STOP.")
+            from angerona.resilience.source_stop import source_runtime_admitted
+            if source_runtime_admitted():
+                raise RuntimeError("Ordinary source startup has no admitted STOP session.")
+            # Installed/protected startup retains its independent authority. A
+            # source session never clears or requests this machine-wide token.
+            if os.environ.get("ANGERONA_SUPERVISED_RECOVERY") == "1":
+                if shutdown_token.is_standdown_requested():
+                    shutdown_token.signal_external_watchdog_stop()
+                    return False
+            else:
+                shutdown_token.clear_standdown(strict=True)
+                if shutdown_token.is_standdown_requested():
+                    raise RuntimeError("Explicit launch could not clear the authenticated operator STOP.")
         # Show the window immediately so the user sees a responsive UI.
         # Module discovery (37 importlib.import_module calls) and thread
         # starts are deferred to a background thread via a zero-delay timer
@@ -787,7 +810,7 @@ class AngeronaApp:
         # non-daemon reader. A later start failure therefore runs shutdown.
         self._start_recorder_integrity()
         from PySide6.QtCore import QTimer
-        if os.environ.get("ANGERONA_SUPERVISED_RECOVERY") == "1":
+        if source_context is not None or os.environ.get("ANGERONA_SUPERVISED_RECOVERY") == "1":
             # Covers a native-parent launch already past its admission check
             # when the previous core saves STOP. This child may never revive it.
             self._operator_stop_timer = QTimer(self.window)
@@ -822,11 +845,19 @@ class AngeronaApp:
                 "independent history witnessing is unavailable; local records are preserved", exc)
 
     def _honor_operator_stop(self) -> None:
-        from angerona.resilience.shutdown_token import is_standdown_requested
-
-        if is_standdown_requested():
-            self._operator_stop_timer.stop()
-            self.window._terminate()
+        source_context = getattr(self, "_source_stop_context", None)
+        if source_context is not None:
+            superseded = getattr(source_context, "is_superseded", None)
+            requested = (source_context.is_stop_requested() is True
+                         or callable(superseded) and superseded() is True)
+        else:
+            from angerona.resilience.shutdown_token import is_standdown_requested
+            requested = is_standdown_requested()
+        if requested:
+            timer = getattr(self, "_operator_stop_timer", None)
+            if timer is not None:
+                timer.stop()
+            self.window._terminate()  # Authenticated intent bypasses UI locking.
 
     def _schedule_dashboard_ready(self) -> None:
         """Allow a shown dashboard to paint before reporting it to the helper."""
@@ -1070,6 +1101,9 @@ class AngeronaApp:
         requested = getattr(self, "_shutdown_requested", None)
         if requested is not None and requested.is_set():
             return True
+        source_context = getattr(self, "_source_stop_context", None)
+        if source_context is not None:
+            return not source_context.respawn_allowed()
         from angerona.resilience.shutdown_token import is_standdown_requested
         return is_standdown_requested()
 
@@ -1114,6 +1148,11 @@ class AngeronaApp:
                 source_owner = getattr(self, "_source_update_controller", None)
                 source_options = ({"source_update_controller": source_owner}
                                   if source_owner is not None else {})
+                source_context = getattr(self, "_source_stop_context", None)
+                if source_context is not None:
+                    from angerona.resilience.source_stop import SOURCE_SESSION_ENV
+                    _os.environ[SOURCE_SESSION_ENV] = source_context.epoch
+                    source_options["source_stop_context"] = source_context
                 self._resilience = start_resilience(
                     self.bus,
                     config=self.config,
@@ -1513,45 +1552,142 @@ class AngeronaApp:
         }
 
     def _cancel_owned_work(self) -> None:
-        """Fence work without classifying a startup exception as operator STOP."""
-        from angerona.core.ollama_lifecycle import begin_ollama_shutdown
+        """Attempt every independent fence; keep any failure explicitly held."""
+        failures = set()
+
+        def fence(phase, operation):
+            try:
+                operation()
+            except Exception as error:
+                # Closed phase names and bounded exception types only. A broken
+                # optional fence never prevents cancellation of the other owners.
+                failures.add(phase + ":" + type(error).__name__[:80])
 
         requested = getattr(self, "_shutdown_requested", None)
         if requested is None:
             requested = threading.Event()
             self._shutdown_requested = requested
-        requested.set()
+        fence("app-admission", lambda: requested.set())
         integrity = getattr(self, "recorder_integrity_runtime", None)
         if integrity is not None:
-            integrity.request_stop()
+            fence("recorder-integrity", lambda: integrity.request_stop())
         tools_controller = getattr(getattr(self, "manager", None), "_curated_tools_controller", None)
         if tools_controller is not None:
-            try:
-                tools_controller.shutdown()
-            except Exception:
-                pass  # Remaining shutdown fences must still run.
+            fence("community-tools", lambda: tools_controller.shutdown())
         breach_controller = getattr(self, "_breach_state_controller", None)
         if breach_controller is not None:
-            stopper = getattr(breach_controller, "request_stop", None)
-            if callable(stopper):
-                try:
-                    stopper()
-                except Exception:
-                    pass
-        begin_ollama_shutdown()
-        from angerona.core.mobile_cli_custody import request_signal_stop
-        request_signal_stop()
+            fence("breach-response", lambda: breach_controller.request_stop())
+
+        def stop_ai():
+            from angerona.core.ollama_lifecycle import begin_ollama_shutdown, begin_operator_ollama_shutdown
+            if getattr(self, "_operator_stop_recorded", False) is True:
+                begin_operator_ollama_shutdown()
+            else:
+                begin_ollama_shutdown()
+        fence("owned-ai", stop_ai)
+
+        def stop_signal():
+            from angerona.core.mobile_cli_custody import request_signal_stop, request_operator_signal_stop
+            if getattr(self, "_operator_stop_recorded", False) is True:
+                request_operator_signal_stop()
+            else:
+                request_signal_stop()
+        fence("signal-cli", stop_signal)
         resilience = getattr(self, "_resilience", None)
         if resilience is not None:
-            resilience.request_stop()
+            fence("resilience", lambda: resilience.request_stop())
+        # Production initializes the shared gate before workers start. The
+        # fallback supports narrowly constructed offline fixtures/older owners.
+        gate = getattr(self, "_shutdown_custody_gate", None)
+        if gate is None:
+            gate = self._shutdown_custody_gate = threading.RLock()
+        with gate:
+            prior = set(getattr(self, "_shutdown_fence_errors", ()))
+            self._shutdown_fence_errors = tuple(sorted(prior | failures))[:32]
+            # Errors remain latched for this STOP. A later callback returning or
+            # a cosmetic worker exit cannot retroactively prove a failed fence.
+            self._shutdown_fences_incomplete = bool(self._shutdown_fence_errors)
+
+    def _capture_shutdown_custody(self) -> None:
+        """Retain exact existing owners before STOP hides their live inventory.
+
+        This runs on a preparation/cleanup worker. It does not stop anything,
+        select a process by name or grant source control over installed services.
+        """
+        gate = getattr(self, "_shutdown_custody_gate", None)
+        if gate is None:
+            gate = self._shutdown_custody_gate = threading.RLock()
+        with gate:
+            resilience_rows = tuple(getattr(self, "_shutdown_resilience_custody", ()))
+            blackboxes = tuple(getattr(self, "_shutdown_blackbox_custody", ()))
+            inventories = tuple(getattr(self, "_shutdown_inventory_custody", ()))
+            healers = tuple(getattr(self, "_shutdown_healer_custody", ()))
+            capture_errors = set(getattr(self, "_shutdown_custody_capture_errors", ()))
+            resilience = getattr(self, "_resilience", None)
+            if resilience is not None and not any(owner is resilience for owner, _ in resilience_rows):
+                custody = None
+                try:
+                    capture = getattr(resilience, "capture_retirement_custody", None)
+                    if not callable(capture):
+                        raise RuntimeError("Configured resilience owner has no exact retirement custody")
+                    custody = capture()
+                except Exception as error:
+                    # Unknown proof is retained, not a veto on STOP for every
+                    # other owner. No protected/source authority is substituted.
+                    capture_errors.add("capture-resilience:" + type(error).__name__)
+                resilience_rows += ((resilience, custody),)
+            blackbox = getattr(self, "_blackbox_proc", None)
+            if blackbox is not None and not any(owner is blackbox for owner in blackboxes):
+                blackboxes += (blackbox,)  # Retain even when its query cut fails.
+                try:
+                    prepare_tree = getattr(blackbox, "prepare_tree_retirement", None)
+                    if getattr(blackbox, "owns_descendants", False) is True and callable(prepare_tree):
+                        prepare_tree(timeout=3.0)
+                except Exception as error:
+                    capture_errors.add("capture-blackbox:" + type(error).__name__)
+            inventory = getattr(self, "_process_snapshot_lifecycle", None)
+            if inventory is not None and not any(owner is inventory for owner in inventories):
+                inventories += (inventory,)
+            healer = getattr(self, "_runtime_healer", None)
+            if healer is not None and not any(owner is healer for owner in healers):
+                healers += (healer,)
+            if any(len(rows) > 8 for rows in (resilience_rows, blackboxes, inventories, healers)):
+                raise RuntimeError("Shutdown ownership exceeds its bounded custody inventory")
+            self._shutdown_resilience_custody = resilience_rows
+            self._shutdown_blackbox_custody = blackboxes
+            self._shutdown_inventory_custody = inventories
+            self._shutdown_healer_custody = healers
+            self._shutdown_custody_capture_errors = tuple(sorted(capture_errors))
+            self._shutdown_custody_captured = True
 
     def prepare_shutdown(self) -> None:
-        """Persist explicit STOP before any owned process can exit."""
-        from angerona.resilience import shutdown_token
-
-        shutdown_token.request_operator_stop()
+        """Capture ownership, persist STOP, then close owned work admission."""
+        # This must precede both the durable command and request_stop(): the
+        # manager intentionally hides response/exclusion inventories afterward.
+        self._capture_shutdown_custody()
+        source_context = getattr(self, "_source_stop_context", None)
+        if source_context is not None:
+            source_context.request_stop(reason="dashboard or tray STOP")
+        else:
+            from angerona.resilience.source_stop import source_runtime_admitted
+            if source_runtime_admitted():
+                raise RuntimeError("Source STOP has no admitted ordinary-user session")
+            from angerona.resilience import shutdown_token
+            shutdown_token.request_operator_stop()
+        self._operator_stop_recorded = True
         self._cancel_owned_work()
-        shutdown_token.signal_external_watchdog_stop()
+        if source_context is None:
+            from angerona.resilience import shutdown_token
+            try:
+                shutdown_token.signal_external_watchdog_stop()
+            except Exception as error:
+                # The authenticated protected STOP already exists. Preserve its
+                # auxiliary-signalling failure and continue the owned cleanup.
+                with self._shutdown_custody_gate:
+                    prior = set(getattr(self, "_shutdown_fence_errors", ()))
+                    prior.add("external-watchdog:" + type(error).__name__[:80])
+                    self._shutdown_fence_errors = tuple(sorted(prior))[:32]
+                    self._shutdown_fences_incomplete = True
 
     def shutdown(self) -> None:
         """Mark cancellation immediately, then serialize startup teardown."""
@@ -1694,40 +1830,140 @@ class AngeronaApp:
                 self._critical_ai_diagnostic_error_type = type(error).__name__
         self._critical_ai_diagnostic_saved = saved
 
-    def _shutdown_critical_owned(self) -> None:
-        inventory = getattr(self, "_process_snapshot_lifecycle", None)
-        if inventory is not None:
-            inventory.request_stop()
-        # Resilience-free launches still retain their exact Black Box handle.
-        blackbox = getattr(self, "_blackbox_proc", None)
-        if blackbox is not None:
+    @staticmethod
+    def _blackbox_retirement_proven(owner) -> bool:
+        """Read an exact owner's existing native-signal/close receipt only."""
+        snapshot = getattr(owner, "tree_retirement_snapshot", None)
+        if not callable(snapshot):
+            return False
+        try:
+            value = snapshot()
+            return (type(value) is dict and value.get("cut_ready") is True
+                    and value.get("dispatched") is True
+                    and value.get("signals_proven") is True
+                    and value.get("handles_closed") is True
+                    and value.get("close_held") is False and not value.get("error_type"))
+        except Exception:
+            return False
+
+    @staticmethod
+    def _inventory_retirement_proven(owner) -> bool:
+        # The lifecycle's retained owner loop sets _retired only after native
+        # provider.stop() proves retirement. Also require actual thread exit.
+        retired = getattr(owner, "_retired", None)
+        thread = getattr(owner, "_thread", None)
+        return (isinstance(retired, threading.Event) and retired.is_set()
+                and (thread is None or isinstance(thread, threading.Thread)
+                     and not thread.is_alive()))
+
+    @staticmethod
+    def _healer_retirement_proven(owner) -> bool:
+        stopped = getattr(owner, "_stop", None)
+        thread = getattr(owner, "_thread", None)
+        return (isinstance(stopped, threading.Event) and stopped.is_set()
+                and (thread is None or isinstance(thread, threading.Thread)
+                     and not thread.is_alive()))
+
+    def shutdown_companions_retired(self) -> bool:
+        """GUI-safe retained memory only; no files, sockets or native probes."""
+        if (getattr(self, "_shutdown_custody_captured", False) is not True
+                or getattr(self, "_critical_cleanup_observed", False) is not True
+                or getattr(self, "_shutdown_fences_incomplete", False) is True):
+            return False
+        requested = getattr(self, "_shutdown_requested", None)
+        if not isinstance(requested, threading.Event) or not requested.is_set():
+            return False
+        resilience_rows = tuple(getattr(self, "_shutdown_resilience_custody", ()))
+        blackboxes = tuple(getattr(self, "_shutdown_blackbox_custody", ()))
+        inventories = tuple(getattr(self, "_shutdown_inventory_custody", ()))
+        healers = tuple(getattr(self, "_shutdown_healer_custody", ()))
+        # An owner published late by startup must be captured and retired too.
+        for current, retained in (
+            (getattr(self, "_resilience", None), tuple(owner for owner, _ in resilience_rows)),
+            (getattr(self, "_blackbox_proc", None), blackboxes),
+            (getattr(self, "_process_snapshot_lifecycle", None), inventories),
+            (getattr(self, "_runtime_healer", None), healers),
+        ):
+            if current is not None and not any(current is owner for owner in retained):
+                return False
+        for owner, custody in resilience_rows:
+            proof = getattr(owner, "shutdown_retired", None)
             try:
-                if getattr(blackbox, "owns_descendants", False):
-                    blackbox.terminate()
+                if not callable(proof) or proof(custody) is not True:
+                    return False
+            except Exception:
+                return False
+        if (any(not self._blackbox_retirement_proven(owner) for owner in blackboxes)
+                or any(not self._inventory_retirement_proven(owner) for owner in inventories)
+                or any(not self._healer_retirement_proven(owner) for owner in healers)):
+            return False
+        # A critical worker's earlier false sample cannot permanently hold a
+        # helper that retires later. Both getters inspect current owned memory
+        # without waiting on a lock or performing native/file/socket discovery.
+        from angerona.core.mobile_cli_custody import signal_retirement_proven_memory
+        if signal_retirement_proven_memory() is not True:
+            return False
+        from angerona.core.ollama_lifecycle import owned_ollama_retirement_proven
+        # Configured-model unload errors remain in their separate diagnostic;
+        # this predicate establishes actual owned process/admission retirement.
+        return owned_ollama_retirement_proven() is True
+
+    def _shutdown_critical_owned(self) -> None:
+        errors = set(getattr(self, "_shutdown_custody_capture_errors", ()))
+        errors.update(getattr(self, "_shutdown_fence_errors", ()))
+        try:
+            # Include a manager/sidecar published by in-flight startup after the
+            # initial STOP capture. Never replace the earlier retained owners.
+            self._capture_shutdown_custody()
+        except Exception as error:
+            errors.add("custody:" + type(error).__name__)
+        for inventory in tuple(getattr(self, "_shutdown_inventory_custody", ())):
+            try:
+                inventory.request_stop()
+            except Exception as error:
+                errors.add("inventory:" + type(error).__name__)
+        # Resilience-free launches retain their exact Black Box process/Job.
+        # A root-only Popen wait is not proof that all descendants retired.
+        for blackbox in tuple(getattr(self, "_shutdown_blackbox_custody", ())):
+            if self._blackbox_retirement_proven(blackbox):
+                continue
+            try:
+                if getattr(blackbox, "owns_descendants", False) is True:
+                    from angerona.core.windows_child_job import OwnedWindowsChild
+                    if (getattr(self, "_operator_stop_recorded", False) is True
+                            and type(blackbox) is OwnedWindowsChild):
+                        OwnedWindowsChild.terminate_for_operator_stop(blackbox)
+                    else:
+                        blackbox.terminate()
                     blackbox.wait(timeout=3.0)
                     blackbox.wait_tree(timeout=3.0)
                     blackbox.close()
-                    self._blackbox_proc = None
-                elif blackbox.poll() is None:
-                    blackbox.terminate()
-                    try:
-                        blackbox.wait(timeout=2.0)
-                    except Exception:
-                        blackbox.kill()
-                        blackbox.wait(timeout=2.0)
-            except Exception:
-                pass
-        # Release AI before either supervisor/healer lifecycle lock can wait.
-        # The terminal fence also catches an in-flight late server launch.
+                    if not self._blackbox_retirement_proven(blackbox):
+                        raise RuntimeError("Black Box native retirement receipt is incomplete")
+                    if getattr(self, "_blackbox_proc", None) is blackbox:
+                        self._blackbox_proc = None
+                else:
+                    if blackbox.poll() is None:
+                        blackbox.terminate()
+                        try:
+                            blackbox.wait(timeout=2.0)
+                        except Exception:
+                            blackbox.kill()
+                            blackbox.wait(timeout=2.0)
+                    errors.add("blackbox:descendant-custody-unavailable")
+            except Exception as error:
+                errors.add("blackbox:" + type(error).__name__)
+        # AI retires independently even when another companion is held.
         try:
-            if not getattr(self, "_critical_ai_done", False):
-                from angerona.core.ollama_lifecycle import shutdown_ollama, owned_ollama_retirement_proven
+            from angerona.core.ollama_lifecycle import shutdown_ollama, owned_ollama_retirement_proven
+            if (not getattr(self, "_critical_ai_done", False)
+                    or not owned_ollama_retirement_proven()):
                 shutdown_ollama(
                     getattr(self.config, "ollama_host", "http://localhost:11434"),
                     getattr(self.config, "ollama_model", "llama3"),
                 )
-                self._critical_ai_done = owned_ollama_retirement_proven()
-                self._critical_ai_error_type = "" if self._critical_ai_done else "OllamaRetirementIncomplete"
+            self._critical_ai_done = owned_ollama_retirement_proven() is True
+            self._critical_ai_error_type = "" if self._critical_ai_done else "OllamaRetirementIncomplete"
         except Exception as error:
             self._critical_ai_done = False
             self._critical_ai_error_type = type(error).__name__
@@ -1736,15 +1972,99 @@ class AngeronaApp:
         except Exception as error:
             self._critical_ai_diagnostic_saved = False
             self._critical_ai_diagnostic_error_type = type(error).__name__
-        resilience = getattr(self, "_resilience", None)
-        if resilience is not None:
+        for resilience, custody in tuple(getattr(self, "_shutdown_resilience_custody", ())):
             try:
                 resilience.stop(terminate_children=True)
-            except Exception:
-                pass
-        healer = getattr(self, "_runtime_healer", None)
-        if healer is not None:
-            healer.stop()
+                proof = getattr(resilience, "shutdown_retired", None)
+                if not callable(proof) or proof(custody) is not True:
+                    errors.add("resilience:retirement-unproven")
+            except Exception as error:
+                errors.add("resilience:" + type(error).__name__)
+        for healer in tuple(getattr(self, "_shutdown_healer_custody", ())):
+            try:
+                healer.stop()
+                if not self._healer_retirement_proven(healer):
+                    errors.add("healer:retirement-unproven")
+            except Exception as error:
+                errors.add("healer:" + type(error).__name__)
+        for inventory in tuple(getattr(self, "_shutdown_inventory_custody", ())):
+            waiter = getattr(inventory, "wait_retired", None)
+            if callable(waiter):
+                try:
+                    waiter(timeout=3.0)
+                except Exception as error:
+                    errors.add("inventory:" + type(error).__name__)
+            if not self._inventory_retirement_proven(inventory):
+                errors.add("inventory:retirement-unproven")
+        # Cancellation already fenced new Signal calls. Sample/wait off Qt;
+        # no GUI predicate takes the Signal registry's potentially held lock.
+        signal_outcome = self._signal_retirement_outcome()
+        deadline = time.monotonic() + 3.0
+        while not self._signal_retirement_proven(signal_outcome) and time.monotonic() < deadline:
+            time.sleep(.02)
+            signal_outcome = self._signal_retirement_outcome()
+        self._signal_retirement_at_shutdown = signal_outcome
+        self._critical_signal_done = self._signal_retirement_proven(signal_outcome)
+        if not self._critical_signal_done:
+            errors.add("signal:retirement-unproven")
+        self._critical_companion_errors = tuple(sorted(errors))
+        self._critical_cleanup_observed = True
+
+    def _engine_threads_retired(self) -> bool:
+        """Bounded exact in-memory references, never name-based thread discovery."""
+        manager = getattr(self, "manager", None)
+        modules = getattr(manager, "modules", None)
+        if type(modules) is not dict or len(modules) > 256:
+            return False
+        owners = [self, manager, *tuple(modules.values())]
+        for name in ("reporter", "flight_recorder_worker", "evidence_ingestion",
+                     "process_baseline", "alert_retention_worker", "sentinel_lens_service",
+                     "recorder_integrity_runtime", "live_debug_service", "_breach_state_controller"):
+            owner = getattr(self, name, None)
+            if owner is not None:
+                owners.append(owner)
+        current = threading.current_thread()
+        for owner in owners:
+            fields = vars(owner)
+            if len(fields) > 512:
+                return False
+            for value in tuple(fields.values()):
+                values = (value,)
+                if type(value) in (tuple, list):
+                    if len(value) > 512:
+                        return False
+                    values = value
+                elif type(value) is dict:
+                    if len(value) > 512:
+                        continue  # Data maps are not a thread-ownership API.
+                    values = tuple(value.values())
+                for worker in values:
+                    if isinstance(worker, threading.Thread) and worker is not current and worker.is_alive():
+                        return False
+        return True
+
+    def finalize_source_stop(self, gui_result) -> None:
+        """Worker-only epoch receipt after GUI and owned companions have retired."""
+        source_context = getattr(self, "_source_stop_context", None)
+        if source_context is None:
+            return  # Installed authority has its separate durable STOP protocol.
+        if (type(gui_result) is not dict or gui_result.get("state") != "retired"
+                or gui_result.get("forced") is not False
+                or gui_result.get("pending_workers") != []
+                or gui_result.get("pending_custody") != []
+                or getattr(self, "_operator_stop_recorded", False) is not True
+                or getattr(self, "_optional_owned_drained", False) is not True
+                or self.shutdown_companions_retired() is not True):
+            raise RuntimeError("Source epoch remains stopped; complete retirement is unproven")
+        # Module.stop() signals rather than joins. Give those exact captured
+        # generations a short final chance to retire; never claim hung work did.
+        deadline = time.monotonic() + 3.0
+        while not self._engine_threads_retired() and time.monotonic() < deadline:
+            time.sleep(.02)
+        if not self._engine_threads_retired():
+            raise RuntimeError("Source epoch remains stopped; an owned engine thread is pending")
+        source_context.mark_retired()
+        self._source_stop_epoch_retired = True
 
     def _shutdown_services_and_stores(self) -> None:
         self.reporter.stop()

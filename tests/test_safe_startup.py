@@ -17,6 +17,10 @@ from angerona.core.startup_protocol import notify_dashboard_ready
 
 @pytest.fixture(autouse=True)
 def _isolate_model_environment(monkeypatch, tmp_path):
+    # These synthetic LaunchPlan cases exercise the legacy/protected token domain.
+    # Ordinary source-helper admission is covered by the canonical bridge suite.
+    from angerona.resilience import source_stop
+    monkeypatch.setattr(source_stop, "source_runtime_admitted", lambda: False)
     # Startup tests must never validate the developer's live model directory.
     for name in ("ANGERONA_OLLAMA_MODELS", "OLLAMA_MODELS", "ANGERONA_STARTUP_SUPERVISED"):
         monkeypatch.delenv(name, raising=False)

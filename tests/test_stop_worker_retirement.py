@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import threading
 import time
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -203,6 +203,8 @@ def test_repeated_main_stop_keeps_one_durable_intent_and_one_retirement_generati
     calls, finished = [], []
     class Shell(QMainWindow):
         _terminate = main_window.MainWindow._terminate
+        _poll_stop_preparation = main_window.MainWindow._poll_stop_preparation
+        _complete_prepared_stop = main_window.MainWindow._complete_prepared_stop
         _retained_shutdown_custody = main_window.MainWindow._retained_shutdown_custody
         def __init__(self):
             super().__init__()
@@ -224,6 +226,8 @@ def test_repeated_main_stop_keeps_one_durable_intent_and_one_retirement_generati
             finished.append(value)
     shell = Shell()
     shell._terminate()
+    wait(app, lambda: hasattr(shell, "_operator_stop_retirement"))
+    assert shell._operator_stop_preparation.retired()
     generation = shell._operator_stop_retirement
     shell._terminate()
     wait(app, lambda: bool(finished))
@@ -247,6 +251,8 @@ def test_main_forced_exit_skips_qt_teardown_but_normal_retirement_allows_it(monk
         SimpleNamespace(quit=lambda: calls.append("qt-quit"))))
     shell = SimpleNamespace(_holographic_orb=SimpleNamespace(shutdown=lambda: calls.append("orb")),
         tray=SimpleNamespace(hide=lambda: calls.append("tray")))
+    shell._operator_stop_exit_after_retirement = MethodType(
+        main_window.MainWindow._operator_stop_exit_after_retirement, shell)
     with pytest.raises(SelfExit):
         main_window.MainWindow._operator_stop_finish(shell, {"forced": forced})
     assert calls == (["self-exit"] if forced else ["orb", "tray", "qt-quit", "self-exit"])

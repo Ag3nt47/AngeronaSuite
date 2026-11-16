@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.15.2 — source-session STOP and optional controls (2026-11-16)
+
+- Separate admitted ordinary-user Windows source STOP from signed, enrolled
+  installed-service control. Source coordination grants no privileged authority
+  and does not resist an attacker already controlling the same user or kernel.
+- Carry captured source state and exact inherited epochs across the canonical
+  launcher/readiness bridge.
+  Accepted STOP inhibits that family's automatic recovery; explicit singleton
+  ownership is required to admit a fresh epoch. Inherited old-family windows
+  cannot silently follow a newer source session.
+- Share one modeless dashboard STOP/tray Quit window, initially unlocked. Optional
+  Lock STOP prevents accidental use; unlocking and confirming Stop are separate.
+  This UI lock is not OS tamper protection or installed-service authorization.
+- Retire exact owned process generations, private child Jobs and retained workers.
+  Continue independent cleanup attempts after a component fails; missing native
+  signal/close proof remains incomplete. Preserve unrelated Python applications,
+  shared AI servers, downloaded models, preferences, alerts and evidence.
+- Bound authenticated session/retirement storage. Reclaim only records with
+  authenticated retirement and exact closing-Core exit proof; preserve unknown
+  state. Read-only source presenters retire only themselves on accepted STOP or
+  verified newer-family supersession.
+- Make current readable-manual source notes reproducible through the exporter.
+  Preserve the historical **1.15.0 / 9 November Word/PDF edition** and its body;
+  current workflows and limits are in the [1.15.2 source companion](docs/releases/v1.15.2.md).
+
 ## 1.15.1 — security maintenance and third-watchdog modes (2026-11-13)
 
 - Apply the reviewed recovery, source-update, authentication, alert and memory

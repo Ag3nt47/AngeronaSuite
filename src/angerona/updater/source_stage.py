@@ -428,7 +428,14 @@ def read_verified_source_archive(raw: bytes, revision: str, *, fetch: Callable[[
         if cancelled():
             raise SourceStageError("source staging was cancelled")
         size, object_id = expected[name]
-        if len(data) != size or _git_object_sha(b"blob", data) != object_id:
+        if len(data) == size and _git_object_sha(b"blob", data) == object_id:
+            continue
+        # GitHub archives apply the repository's `*.bat text eol=crlf` attribute.
+        # Admit only an exact, reversible LF->CRLF smudge of the canonical blob.
+        blob = data.replace(b"\r\n", b"\n")
+        if not (name.casefold().endswith(".bat") and b"\r" not in blob
+                and blob.replace(b"\n", b"\r\n") == data
+                and len(blob) == size and _git_object_sha(b"blob", blob) == object_id):
             raise SourceStageError("source archive blob differs from the canonical Git tree")
     return contents
 

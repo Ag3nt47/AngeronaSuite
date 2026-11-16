@@ -14,6 +14,11 @@ from angerona.resilience import shutdown_token as token
 
 @pytest.fixture(autouse=True)
 def isolated_startup(monkeypatch, tmp_path):
+    # These cases exercise the private legacy HMAC launcher profile below.
+    # An installed/unknown administrator namespace on the test host must not
+    # replace that explicit fixture domain; protected-profile precedence has
+    # separate control_authority tests and remains unchanged in production.
+    monkeypatch.setattr(token, "_admin_authority", lambda: None)
     for name in (
         "ANGERONA_SUPERVISED_RECOVERY", "ANGERONA_STARTUP_SUPERVISED",
         "ANGERONA_OLLAMA_MODELS", "OLLAMA_MODELS",

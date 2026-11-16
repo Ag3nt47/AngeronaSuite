@@ -37,6 +37,18 @@ def test_exact_tree_and_blob_proof_accepts_nested_unicode_and_git_directory_orde
     assert len(calls) == 2 and calls[1].endswith("?recursive=1")
 
 
+def test_archive_crlf_smudge_is_admitted_only_for_exact_bat_conversion():
+    files = {"run.bat": b"@echo off\nexit /b 0\n", "src/one.py": b"one\n"}
+    fetch, _paths, _calls = frozen_git(files)
+    served = dict(files, **{"run.bat": b"@echo off\r\nexit /b 0\r\n"})
+    assert stage.read_verified_source_archive(archive(served, TARGET), TARGET, fetch=fetch) == served
+    for bad in ({"run.bat": b"@echo off\r\nexit /b 0\n"},          # mixed endings
+                {"run.bat": b"@echo off\r\r\nexit /b 0\r\n"},      # stray CR
+                {"src/one.py": b"one\r\n"}):                        # not an eol=crlf path
+        with pytest.raises(stage.SourceStageError, match="differs"):
+            stage.read_verified_source_archive(archive(dict(files, **bad), TARGET), TARGET, fetch=fetch)
+
+
 @pytest.mark.parametrize("damage", ["same-size", "size", "extra", "missing"])
 def test_changed_zip_cannot_reuse_immutable_commit_metadata(damage):
     files = {"src/one.py": b"one", "src/two.py": b"two"}

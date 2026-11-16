@@ -52,6 +52,7 @@ _data_paths._elevated_source_runtime = lambda: False
 
 
 _SOURCE_USER_OWNER_MODULES = frozenset({
+    "test_source_stop_protocol.py",
     "test_source_activation_file_custody.py",
     "test_source_activation_heartbeat.py",
     "test_source_activation_workspace.py",
@@ -240,6 +241,12 @@ def _drain_qt_deferred_deletes() -> None:
 @pytest.fixture(autouse=True)
 def isolate_angerona_runtime(request: pytest.FixtureRequest, monkeypatch):
     """Give every test an independent runtime, diagnostics, and temp root."""
+    # Record even an initially absent value: production startup publishes its
+    # source epoch with os.environ, so independent synthetic generations must
+    # not inherit that reference from an earlier test. Restore the caller's
+    # original environment when this fixture retires.
+    monkeypatch.setenv("ANGERONA_SOURCE_STOP_SESSION", "")
+    monkeypatch.delenv("ANGERONA_SOURCE_STOP_SESSION")
     identity = hashlib.sha256(request.node.nodeid.encode("utf-8")).hexdigest()[:20]
     root = _SESSION_ROOT / identity
     temp = root / "tmp"

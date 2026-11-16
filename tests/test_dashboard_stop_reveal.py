@@ -15,13 +15,14 @@ import pytest
 from PySide6 import QtWidgets
 from PySide6.QtCore import QAbstractAnimation, QCoreApplication, QEvent, QObject, QRect, QThread, QTimer, Qt
 from PySide6.QtGui import QRegion
-from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QWidget
+from PySide6.QtWidgets import QApplication, QDialog, QWidget
 from shiboken6 import delete, isValid
 
 from angerona.core import ollama_lifecycle, process_exit
 from angerona.gui import action_worker, breach_display, header_controls, live_debug_panel
 from angerona.gui.header_controls import PanelRevealOverlay
 from angerona.gui.main_window import MainWindow
+from angerona.gui.stop_controls import StopControlsDialog
 from angerona.resilience import shutdown_token
 
 
@@ -48,6 +49,23 @@ def scene(app, monkeypatch, tmp_path):
     """Real Qt components; all runtime authority and host work are forbidden."""
     calls, dialogs, masks = [], [], []
     critical_entered, release_critical, motion_verified = (threading.Event() for _ in range(3))
+    # This scene tests Qt motion/teardown ordering. Retain the real coordinator
+    # and its actual diagnostic thread, with a bounded memory sink so unrelated
+    # filesystem contention cannot turn this UI fixture into a disk-speed test.
+    from angerona.gui import shutdown_retirement
+    actual_retirement = shutdown_retirement.ShutdownRetirement
+    diagnostics = []
+
+    def diagnostic_writer(_root, payload):
+        if len(diagnostics) >= 8:
+            raise AssertionError("Inert diagnostic projection exceeded its fixture bound")
+        diagnostics.append(payload)
+
+    def retirement_factory(owner, **options):
+        assert "diagnostic_writer" not in options
+        return actual_retirement(owner, diagnostic_writer=diagnostic_writer, **options)
+
+    monkeypatch.setattr(shutdown_retirement, "ShutdownRetirement", retirement_factory)
     # Exercise the real process-wide fences, restoring only their fixture scope.
     assert not action_worker.active_finite_actions()
     assert not breach_display.active_report_exports()
@@ -79,6 +97,9 @@ def scene(app, monkeypatch, tmp_path):
     overlay.enable_global_windows()
     owner._panel_reveal = overlay
     owner._termination_started = False
+    owner._termination_preparing = False
+    owner._operator_stop_locked = False
+    owner._stop_confirmation_dialog = None
     owner._shutdown_prepare = lambda: calls.append("persist")
     owner._shutdown_callback = lambda: calls.append("inert-cleanup")
     owner.config = SimpleNamespace(data_dir=tmp_path)
@@ -112,7 +133,10 @@ def scene(app, monkeypatch, tmp_path):
     owner._hold_shutdown_views = hold_owned_views
     for name in ("_shutdown_view_owners", "_retained_shutdown_workers",
                  "_retained_shutdown_custody", "_operator_stop_cleanup",
-                 "_operator_stop_progress", "_operator_stop_finish"):
+                 "_operator_stop_progress", "_operator_stop_finish", "_poll_stop_preparation",
+                 "_complete_prepared_stop", "_full_shutdown", "_set_operator_stop_locked",
+                 "_confirm_operator_stop", "_operator_stop_exit_after_retirement",
+                 "_poll_stop_finalization"):
         setattr(owner, name, MethodType(getattr(MainWindow, name), owner))
 
     def critical_cleanup():
@@ -149,11 +173,17 @@ def scene(app, monkeypatch, tmp_path):
 
     state = SimpleNamespace(owner=owner, overlay=overlay, calls=calls, dialogs=dialogs,
                             destination=destination, critical_entered=critical_entered,
-                            release_critical=release_critical)
+                            release_critical=release_critical, diagnostics=diagnostics)
     try:
         yield state
     finally:
         release_critical.set()
+        preparation = getattr(owner, "_operator_stop_preparation", None)
+        if preparation is not None:
+            preparation.thread.join(3)
+            assert not preparation.thread.is_alive(), "Exact inert preparation did not retire"
+            if owner._termination_preparing:
+                owner._poll_stop_preparation()
         retirement = getattr(owner, "_operator_stop_retirement", None)
         if retirement is not None:
             wait_for(app, lambda: retirement._done)
@@ -206,7 +236,7 @@ def test_accepted_stop_retires_motion_before_threads_and_real_dialog_close(app, 
 
     MainWindow._terminate(scene.owner)
 
-    assert scene.critical_entered.wait(1)
+    wait_for(app, scene.critical_entered.is_set)
     assert scene.calls[0] == "persist"
     assert scene.calls.index("views-fenced") < scene.calls.index("critical-cleanup")
     assert "inert-cleanup" not in scene.calls  # Stores wait for the critical owner.
@@ -216,6 +246,7 @@ def test_accepted_stop_retires_motion_before_threads_and_real_dialog_close(app, 
     result = scene.owner._operator_stop_result
     assert result["state"] == "retired" and result["forced"] is False, json.dumps(result, sort_keys=True)
     assert result["diagnostic_persisted"] is True
+    assert scene.diagnostics[-1]["state"] == result["state"]
     assert not result["pending_workers"] and not result["pending_custody"]
     assert scene.calls.count("inert-cleanup") == 1
     assert scene.calls[-2:] == ["qt-quit", ("inert-exit", 0)]
@@ -225,11 +256,11 @@ def test_accepted_stop_retires_motion_before_threads_and_real_dialog_close(app, 
 
 
 @pytest.mark.parametrize("rejection", ["no", "persist-error"])
-def test_rejected_stop_preserves_real_reveal_and_reverse_close(app, scene, monkeypatch, rejection):
+def test_rejected_stop_preserves_real_reveal_and_reverse_close(app, scene, rejection):
     dialog = scene.destination()
     if rejection == "no":
-        monkeypatch.setattr(QMessageBox, "exec", lambda *_args: QMessageBox.No)
         MainWindow._full_shutdown(scene.owner)
+        scene.owner._stop_confirmation_dialog.cancel_button.click()
         assert scene.calls == []
     else:
         def fail_prepare():
@@ -237,9 +268,10 @@ def test_rejected_stop_preserves_real_reveal_and_reverse_close(app, scene, monke
             raise OSError("inert persistence failure")
 
         scene.owner._shutdown_prepare = fail_prepare
-        monkeypatch.setattr(QMessageBox, "critical", lambda *_args: scene.calls.append("stop-error"))
         MainWindow._terminate(scene.owner)
-        assert scene.calls == ["persist-failed", "stop-error"]
+        wait_for(app, lambda: not scene.owner._termination_preparing)
+        assert scene.calls == ["persist-failed"]
+        assert "preparation failed" in scene.owner._stop_confirmation_dialog.message_label.text()
     assert not scene.owner._termination_started
     assert not hasattr(scene.owner, "_operator_stop_retirement")
     assert not scene.overlay._shut_down and scene.overlay._global_windows
@@ -250,7 +282,6 @@ def test_rejected_stop_preserves_real_reveal_and_reverse_close(app, scene, monke
     QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
     assert not isValid(dialog)
 
-
 def test_deleted_native_overlay_does_not_hold_durable_stop(app, scene):
     scene.destination()
     finish_opening(app, scene.overlay)
@@ -259,8 +290,8 @@ def test_deleted_native_overlay_does_not_hold_durable_stop(app, scene):
 
     MainWindow._terminate(scene.owner)
 
-    assert scene.owner._termination_started
-    assert scene.critical_entered.wait(1)
+    wait_for(app, lambda: scene.owner._termination_started)
+    wait_for(app, scene.critical_entered.is_set)
     scene.release_critical.set()
     wait_for(app, lambda: scene.owner._operator_stop_retirement._done)
     assert scene.owner._operator_stop_result["state"] == "retired"
@@ -274,7 +305,6 @@ def test_busy_reveal_cannot_drop_or_mask_the_real_stop_confirmation(app, scene, 
     from PySide6.QtTest import QTest
 
     owner, overlay = scene.owner, scene.overlay
-    owner._full_shutdown = MethodType(MainWindow._full_shutdown, owner)
     owner._reveal_window_from = MethodType(MainWindow._reveal_window_from, owner)
     stop = header_controls.HeaderActionButton("STOP", "stop", "Stop Angerona", "Inert STOP fixture")
     stop.setParent(owner)
@@ -283,17 +313,15 @@ def test_busy_reveal_cannot_drop_or_mask_the_real_stop_confirmation(app, scene, 
         owner, stop, owner._full_shutdown, "#ef4444"))
     first = scene.destination()
     assert overlay._target is first and not first.mask().isEmpty()
-    # Busy optional motion cannot consume either an ordinary action or STOP.
     normal = QWidget(owner)
     ordinary_calls = []
     MainWindow._run_header_action(owner, normal, lambda: ordinary_calls.append(True), "#38bdf8")
     assert ordinary_calls == [True]
 
-    shown, checked, failures = [], [], []
-
+    shown = []
     class PromptShowProbe(QObject):
         def eventFilter(self, watched, event):
-            if (isinstance(watched, QMessageBox) and watched.parentWidget() is owner
+            if (isinstance(watched, StopControlsDialog) and watched.parentWidget() is owner
                     and watched.objectName() == "OperatorStopConfirmation"
                     and event.type() == QEvent.Show):
                 shown.append((watched, watched.property("_angerona_no_reveal"),
@@ -302,56 +330,29 @@ def test_busy_reveal_cannot_drop_or_mask_the_real_stop_confirmation(app, scene, 
 
     probe = PromptShowProbe(owner)
     app.installEventFilter(probe)
-    timer, deadline = QTimer(owner), QTimer(owner)
-    timer.setSingleShot(True)
-    deadline.setSingleShot(True)
-
-    def cancel_if_blocked():
-        failures.append(AssertionError("Inert STOP question did not finish"))
-        prompt = getattr(owner, "_stop_confirmation_dialog", None)
-        if prompt is not None and isValid(prompt):
-            prompt.reject()
-
-    def inspect_and_answer():
-        prompt = getattr(owner, "_stop_confirmation_dialog", None)
-        try:
-            assert isinstance(prompt, QMessageBox) and prompt.isVisible()
-            assert prompt.windowTitle() == "Stop Angerona"
-            assert prompt.windowModality() == Qt.ApplicationModal
-            assert QApplication.activeModalWidget() is prompt
-            assert prompt.standardButtons() == QMessageBox.Yes | QMessageBox.No
-            assert prompt.defaultButton() is prompt.button(QMessageBox.No)
-            assert prompt.escapeButton() is prompt.button(QMessageBox.No)
-            assert prompt.textFormat() == Qt.PlainText
-            assert "Stop protection, unload Angerona's local AI models" in prompt.text()
-            assert "Continue?" in prompt.text()
-            assert prompt.mask().isEmpty() and prompt not in overlay._captured_windows
-            assert shown == [(prompt, True, True, True)]
-            assert scene.calls == [] and not owner._termination_started
-            # Reentrant delivery raises this exact question instead of nesting one.
-            MainWindow._full_shutdown(owner)
-            assert owner._stop_confirmation_dialog is prompt
-            assert len([box for box in owner.findChildren(QMessageBox) if box.isVisible()]) == 1
-            checked.append(True)
-            if answer == "escape":
-                QTest.keyClick(prompt, Qt.Key_Escape)
-            else:
-                prompt.button(QMessageBox.Yes if answer == "yes" else QMessageBox.No).click()
-        except BaseException as error:
-            failures.append(error)
-            if prompt is not None and isValid(prompt):
-                prompt.reject()
-
-    timer.timeout.connect(inspect_and_answer)
-    deadline.timeout.connect(cancel_if_blocked)
-    timer.start(0)
-    deadline.start(5000)
     try:
-        stop.click()
-        assert not failures, repr(failures)
-        assert checked == [True] and owner._stop_confirmation_dialog is None
+        stop.click()  # Returns immediately; there is no nested modal event loop.
+        prompt = owner._stop_confirmation_dialog
+        assert isinstance(prompt, StopControlsDialog) and prompt.isVisible()
+        assert prompt.windowTitle() == "Stop Angerona"
+        assert prompt.windowModality() == Qt.NonModal
+        assert QApplication.activeModalWidget() is None
+        assert "Stop protection, unload Angerona's local AI models" in prompt.detail_label.text()
+        assert prompt.mask().isEmpty() and prompt not in overlay._captured_windows
+        assert shown == [(prompt, True, True, True)]
+        assert scene.calls == [] and not owner._termination_started
+        MainWindow._full_shutdown(owner)
+        assert owner._stop_confirmation_dialog is prompt
+        assert len([box for box in owner.findChildren(StopControlsDialog) if box.isVisible()]) == 1
+        if answer == "escape":
+            QTest.keyClick(prompt, Qt.Key_Escape)
+        elif answer == "yes":
+            prompt.confirm_stop.setChecked(True)
+            prompt.stop_button.click()
+        else:
+            prompt.cancel_button.click()
         if answer == "yes":
-            assert scene.critical_entered.wait(1)
+            wait_for(app, scene.critical_entered.is_set)
             assert scene.calls.count("persist") == 1
             assert scene.calls.index("persist") < scene.calls.index("views-fenced")
             assert scene.calls.index("views-fenced") < scene.calls.index("critical-cleanup")
@@ -360,14 +361,13 @@ def test_busy_reveal_cannot_drop_or_mask_the_real_stop_confirmation(app, scene, 
             assert owner._operator_stop_result["state"] == "retired"
             assert scene.calls[-2:] == ["qt-quit", ("inert-exit", 0)]
         else:
+            assert not prompt.isVisible()
             assert scene.calls == [] and not owner._termination_started
             assert not hasattr(owner, "_operator_stop_retirement")
             assert not overlay._shut_down and overlay._global_windows
     finally:
-        timer.stop()
-        deadline.stop()
         app.removeEventFilter(probe)
-        for child in (timer, deadline, probe, stop, normal):
+        for child in (probe, stop, normal):
             if isValid(child):
                 child.deleteLater()
         QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)

@@ -1,11 +1,31 @@
 # Project Angerona (AngeronaSuite) - llms.txt
 
-Version: 1.15.1
-Date: 2026-11-13
+Version: 1.15.2
+Date: 2026-11-16
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
-## LATEST (v1.15.1 — security maintenance and watchdog modes)
+## LATEST (v1.15.2 — source STOP and session controls)
+
+- Ordinary-user Windows desktop source STOP uses an independently admitted source
+  epoch; it never provisions or bypasses installed control authority. Explicit
+  singleton-owned launch creates an epoch; recovery joins its exact old epoch.
+  Accepted STOP survives Core exit and inhibits source peer respawn.
+- Header STOP and tray Quit share modeless Lock / Unlock / confirmed Stop controls.
+  Each session starts unlocked. The optional lock is accidental-use protection,
+  not same-user/admin/kernel tamper resistance or installed-service authority.
+  Cancel, Escape, X and Unlock alone never stop protection.
+- Retain exact companion/native/worker custody before persisting STOP and fencing
+  work. GUI completion reads cached proof; native waits stay on workers. Unknown
+  retirement stays incomplete. Never kill unrelated Python or shared AI servers.
+- See docs/releases/v1.15.2.md for current validation and remaining boundaries.
+  Do not reuse prior hosted results as acceptance for this change.
+- The pre-bridge target cohort passed 682 tests with 2 skips. A canonical launcher
+  bridge correction, its regression checks, and a fresh live-family STOP remain
+  pending. The earlier native-token private protocol check is not live dashboard,
+  complete companion retirement, or signed installed Protect acceptance.
+
+## PREVIOUS (v1.15.1 — security maintenance and watchdog modes)
 
 - The PC source checkout is the authoritative maintenance copy; GitHub receives
   its exact reviewed commit through the guarded publisher. Read the 1.15.1

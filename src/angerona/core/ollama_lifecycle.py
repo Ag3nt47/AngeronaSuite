@@ -582,6 +582,7 @@ _owned_services: dict[tuple[str, int], Any] = {}
 _owned_stop_lock = threading.RLock()
 _chill_release = ContextVar("angerona_chill_model_release", default=False)
 _ai_shutdown = threading.Event()
+_operator_stop_event = None
 _owned_epoch = 0
 _retirement_registry = None
 _retirement_epoch = -1
@@ -605,6 +606,13 @@ def ollama_blocked() -> bool:
 def begin_ollama_shutdown() -> None:
     """Terminal admission fence for this Angerona process generation."""
     _ai_shutdown.set()
+
+
+def begin_operator_ollama_shutdown() -> None:
+    """Fence AI after accepted suite STOP; bind authority to this exact generation."""
+    global _operator_stop_event
+    _operator_stop_event = _ai_shutdown
+    begin_ollama_shutdown()
 
 
 def _require_ollama_allowed() -> None:
@@ -750,7 +758,10 @@ def _stop_owned_service_locked(key, child, *, deadline=None):
             native_type.prepare_tree_retirement(child, timeout=max(0.0, deadline - time.monotonic()))
         except BaseException as error:
             capture_error = error
-        native_type.terminate(child)
+        if _operator_stop_event is _ai_shutdown and _ai_shutdown.is_set():
+            native_type.terminate_for_operator_stop(child)
+        else:
+            native_type.terminate(child)
         if capture_error is not None:
             raise capture_error
         phase = 'wait-server'

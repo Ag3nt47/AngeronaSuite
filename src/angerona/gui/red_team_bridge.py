@@ -304,6 +304,7 @@ class RedTeamToolOwner:
         self._startup_native_close_held = False
         self._native_diagnostic_hold = native_diagnostic_hold if native_diagnostic_hold is not None else threading.Event()
         self._native_termination_dispatched = False
+        self._operator_stop = threading.Event()
         self._pipe_close_started = set()
         self._pipe_close_held = False
         self._job = self._wrapper = self._child = self._process = self._native_owner = None
@@ -546,22 +547,40 @@ class RedTeamToolOwner:
 
     def _terminate_owned_native(self, timeout):
         operation_deadline = time.monotonic() + timeout
+        operator_event = getattr(self, "_operator_stop", None)
+        operator_stop = isinstance(operator_event, threading.Event) and operator_event.is_set()
         if not self._startup_native_capture_lock.acquire(timeout=max(.001, timeout)):
-            raise ToolProtocolError("Native startup retirement observation is busy")
+            if not operator_stop:
+                raise ToolProtocolError("Native startup retirement observation is busy")
+            self._startup_native_capture_error = "NativeDiagnosticBusyAtOperatorStop"
+            self._native_owner.terminate_for_operator_stop()
+            self._native_termination_dispatched = True
+            return
         try:
             if self._native_termination_dispatched:
                 return
-            # Mandatory native custody errors retain the existing hold. No
-            # optional observation may turn a valid owned stop into a blocker.
             remaining = operation_deadline - time.monotonic()
-            if remaining <= 0:
-                raise ToolProtocolError("Original native startup retirement budget expired")
-            self._native_owner.prepare_tree_retirement(timeout=min(3.0, remaining))
+            cut_available = True
             try:
-                self._capture_startup_native_cut(operation_deadline)
+                if remaining <= 0:
+                    raise ToolProtocolError("Original native startup retirement budget expired")
+                self._native_owner.prepare_tree_retirement(timeout=min(3.0, remaining))
             except Exception:
-                self._startup_native_capture_error = "NativeDiagnosticCaptureUnavailable"
-            self._native_owner.terminate()
+                if not operator_stop:
+                    raise
+                cut_available = False
+                self._startup_native_capture_error = "NativeRetirementCaptureUnavailable"
+            if cut_available:
+                try:
+                    self._capture_startup_native_cut(operation_deadline)
+                except Exception:
+                    self._startup_native_capture_error = "NativeDiagnosticCaptureUnavailable"
+            if operator_stop:
+                # Authority was accepted by the Core before the bridge latched
+                # this flag. Dispatch is not a tree-signal or close receipt.
+                self._native_owner.terminate_for_operator_stop()
+            else:
+                self._native_owner.terminate()
             self._native_termination_dispatched = True
         finally:
             self._startup_native_capture_lock.release()
@@ -1705,6 +1724,12 @@ class RedTeamBridge(QObject):
 
     def request_shutdown(self):
         if self.owner is not None:
+            if getattr(self.parent_view, "_termination_started", False) is True:
+                # MainWindow sets this only after accepted authorization and
+                # actual preparation-worker exit. Ordinary tool closes do not.
+                operator_event = getattr(self.owner, "_operator_stop", None)
+                if isinstance(operator_event, threading.Event):
+                    operator_event.set()
             self.owner._startup_stop_requested("suite-shutdown")
         self._closing = True
         self._timer.start()

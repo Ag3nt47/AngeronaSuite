@@ -171,10 +171,10 @@ exit /b %ANGERONA_SOURCE_RC%
 # This readable payload is embedded in start-angerona.bat by the manifest builder
 # companion. The editable source batch file is its trust anchor, not an enclave.
 $ErrorActionPreference='Stop'
-$manifestSha='0fa87bcd4b7caba1bb1f0e6649a5da877ec043606150e80c0cca3edb1d0b4bcc'
-$manifestBlob='cbbc354ed93be8109a8886756aaf4b30e23d9cd6'
-$verifierSha='284987c95d40394fcd28380db5f49cf1fa8f86d70082e3a7f867ff57369857ed'
-$verifierBlob='9c595f84b1b40b77b4aa3dc8fd6571007d854056'
+$manifestSha='30c8edb0e65d8caca5a37fb12923f2a9d34d0dc099cc6ddfe82462c265f2c691'
+$manifestBlob='662c7b1c57be0d6424e8121b1d26642de0754c55'
+$verifierSha='f9493005f0fae34885253e8466a0e5a3e11a60ddf4c35d18b1212f1d6087d1d4'
+$verifierBlob='3944ccecc3e86383b1107b3eb95a1f1859e57cb0'
 $root=[IO.Path]::GetFullPath($env:ANGERONA_INSTALL_ROOT).TrimEnd('\')
 $storage=Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Angerona\SourceData'
 $script:BootstrapCanonicalStorage=$storage

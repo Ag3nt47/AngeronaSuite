@@ -63,6 +63,7 @@ MUTUAL_RECOVERY_FILES = (
     "src/angerona/resilience/recovery_state.py",
     "src/angerona/resilience/shutdown_token.py",
     "src/angerona/resilience/source_guard.py",
+    "src/angerona/resilience/source_stop.py",
     "src/angerona/resilience/supervisor.py",
     "src/angerona/resilience/watchdog.py",
 )
@@ -72,10 +73,11 @@ def test_pinned_bundle_covers_the_mutual_recovery_chain(tmp_path):
     root, _, _ = fixture_root(tmp_path)
     expected, _ = BUILDER.build_manifest(root)
     entries = {row["path"]: row for row in json.loads(expected)["files"]}
-    assert len(BUILDER.FILES) == 55
+    assert len(BUILDER.FILES) == 56
     assert {"src/angerona/resilience/control_authority.py",
             "src/angerona/resilience/deadman.py",
-            "src/angerona/resilience/peer_alerts.py"} <= set(BUILDER.FILES)
+            "src/angerona/resilience/peer_alerts.py",
+            "src/angerona/resilience/source_stop.py"} <= set(BUILDER.FILES)
     for relative in MUTUAL_RECOVERY_FILES:
         raw = BUILDER.read_plain(root, relative)
         assert entries[relative] == {

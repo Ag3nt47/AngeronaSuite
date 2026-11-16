@@ -101,7 +101,7 @@ def test_dashboard_ready_waits_for_shown_visible_window_and_later_gui_timer(
     from PySide6.QtCore import QTimer
 
     import angerona.app as app_module
-    from angerona.resilience import shutdown_token
+    from angerona.resilience import shutdown_token, source_stop
 
     calls = []
     timers = []
@@ -122,6 +122,8 @@ def test_dashboard_ready_waits_for_shown_visible_window_and_later_gui_timer(
     app._deferred_start = lambda: None
     # This test owns the explicit initial launch, not automatic STOP polling.
     # The fake window deliberately is not a native QObject.
+    # This presentation fake has no source singleton/session to enroll.
+    monkeypatch.setattr(source_stop, "source_runtime_admitted", lambda: False)
     monkeypatch.setenv("ANGERONA_SUPERVISED_RECOVERY", "")
     monkeypatch.setattr(shutdown_token, "clear_standdown", lambda **_kwargs: None)
     monkeypatch.setattr(shutdown_token, "is_standdown_requested", lambda: False)

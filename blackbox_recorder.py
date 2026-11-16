@@ -3559,6 +3559,18 @@ def main() -> None:
                    help="Show the window immediately (default: start minimised)")
     args = p.parse_args()
 
+    # Source presenters join one exact family before taking their singleton or
+    # creating Qt. Installed/elevated diagnostics do not consult this domain.
+    from angerona.resilience.source_stop_peer import (
+        SourceSidecarAdmissionError, admit_source_sidecar, install_qt_stop,
+    )
+    try:
+        source_stop = admit_source_sidecar(DATA_DIR)
+    except SourceSidecarAdmissionError:
+        raise SystemExit(2)
+    if source_stop is not None and source_stop.exit_requested():
+        return
+
     # The app and resilience supervisor can notice an absent recorder at nearly
     # the same instant. The OS mutex makes that race harmless and guarantees one
     # Black Box process even when process-command-line inspection is restricted.
@@ -3573,11 +3585,15 @@ def main() -> None:
     except Exception:
         _crash_log = DATA_DIR / "blackbox_startup.log"
 
-    app = win = ui_watchdog = beat_timer = component_beat = None
+    app = win = ui_watchdog = beat_timer = component_beat = source_stop_timer = None
     try:
+        if source_stop is not None:
+            source_stop.start()
         app = QApplication(sys.argv)
         app.setApplicationName(APP_NAME)
         app.setQuitOnLastWindowClosed(True)
+        if source_stop is not None:
+            source_stop_timer = install_qt_stop(app, source_stop)
 
         # Diagnose this independent window independently. Starting before the
         # window constructor also captures an expensive tab/widget constructor,
@@ -3639,6 +3655,16 @@ def main() -> None:
             pass
         raise
     finally:
+        if source_stop_timer is not None:
+            source_stop_timer.stop()
+        if source_stop is not None:
+            source_stop.request_stop()
+            if not source_stop.stop(timeout=2.0):
+                try:
+                    with open(_crash_log, "a", encoding="utf-8") as stream:
+                        stream.write("SOURCE SIDECAR OBSERVER RETIREMENT UNVERIFIED\n")
+                except OSError:
+                    pass
         if beat_timer is not None:
             beat_timer.stop()
         if component_beat is not None:

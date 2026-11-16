@@ -231,6 +231,65 @@ def _source_activation_pending_guard() -> bool:
         pass
     return True
 
+class _SourceStopStartupHeld(RuntimeError):
+    """Source ownership is uncertain; no engine or companion may start."""
+
+
+def _ordinary_source_stop_runtime() -> bool:
+    """Classify desktop source natively without reading STOP authority files."""
+    if bool(getattr(sys, "frozen", False)) or sys.platform != "win32":
+        return False
+    try:
+        from angerona.resilience.source_stop import source_runtime_admitted
+        return source_runtime_admitted() is True
+    except Exception:
+        return False
+
+
+def _source_stop_session_after_lock(lock, *, ordinary_source: bool):
+    """Bind STOP only after this desktop launch actually owns the singleton.
+
+    A recovery reference is exact and inhibit-only. Missing/bad references must
+    never become a fresh epoch or silently inherit a newer desktop generation.
+    Installed/protected and currently unintegrated headless paths stay separate.
+    """
+    if lock is None or ordinary_source is not True or "--headless" in sys.argv:
+        return None
+    from angerona.core.data_paths import data_dir
+    from angerona.resilience.source_stop import (
+        SOURCE_SESSION_ENV, SOURCE_LAUNCH_ENV, activate_source_launch_intent,
+        create_source_session, join_source_session,
+    )
+    import re
+
+    inherited = SOURCE_SESSION_ENV in os.environ
+    recovery = os.environ.get("ANGERONA_SUPERVISED_RECOVERY") == "1"
+    try:
+        storage = data_dir()  # The same configured root used by Config._data_dir.
+        if inherited:
+            epoch = os.environ.get(SOURCE_SESSION_ENV)
+            if type(epoch) is not str or re.fullmatch(r"[0-9a-f]{32}", epoch) is None:
+                raise _SourceStopStartupHeld(
+                    "Source recovery has no valid inherited session reference.")
+            context = join_source_session(storage, epoch=epoch, role="core")
+        elif SOURCE_LAUNCH_ENV in os.environ:
+            context = activate_source_launch_intent(storage, os.environ[SOURCE_LAUNCH_ENV])
+        elif recovery:
+            raise _SourceStopStartupHeld("Source recovery has no valid inherited session reference.")
+        else:
+            context = create_source_session(storage)
+        if context is None or not context.admission_current() or not context.respawn_allowed():
+            raise _SourceStopStartupHeld(
+                "Source STOP coordination is stopped, unavailable or held for review.")
+        os.environ[SOURCE_SESSION_ENV] = context.epoch
+        return context
+    except _SourceStopStartupHeld:
+        raise
+    except Exception:
+        raise _SourceStopStartupHeld(
+            "Source STOP coordination could not be established; existing state was preserved.") from None
+
+
 def main() -> int:
     if sys.argv[1:2] == ["--control-authority"]:
         # Elevated STOP/RESUME helper (UAC). Exact arity; no GUI or Config.
@@ -472,7 +531,10 @@ def main() -> int:
     from angerona.core.data_paths import configure_runtime_environment
     configure_runtime_environment()
 
-    if os.environ.get("ANGERONA_SUPERVISED_RECOVERY") == "1":
+    ordinary_source_stop = ("--headless" not in sys.argv
+                            and _ordinary_source_stop_runtime())
+    if (os.environ.get("ANGERONA_SUPERVISED_RECOVERY") == "1"
+            and not ordinary_source_stop):
         from angerona.resilience.shutdown_token import (
             is_standdown_requested, signal_external_watchdog_stop,
         )
@@ -556,6 +618,19 @@ def main() -> int:
             except Exception:
                 pass
 
+    try:
+        source_stop_context = _source_stop_session_after_lock(
+            lock, ordinary_source=ordinary_source_stop)
+    except _SourceStopStartupHeld as error:
+        print(f"[Angerona] {error} No security engines or companions were started.",
+              file=sys.stderr, flush=True)
+        if lock is not None:
+            try:
+                lock.close()
+            except Exception:
+                pass
+        return 2
+
     from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import QApplication, QMessageBox
     _install_fast_pyside_feature_detection()
@@ -594,6 +669,8 @@ def main() -> int:
             qt, force_chill=chill_requested, startup_endpoint=startup_endpoint,
             process_snapshot_lifecycle=inventory,
             **({"live_debug": True} if "--live-debug" in application_args else {}),
+            **({"source_stop_context": source_stop_context}
+               if source_stop_context is not None else {}),
         )
     except BaseException:
         inventory.request_stop()

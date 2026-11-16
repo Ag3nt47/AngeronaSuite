@@ -50,6 +50,7 @@ FILES = (
     "src/angerona/resilience/recovery_state.py",
     "src/angerona/resilience/shutdown_token.py",
     "src/angerona/resilience/source_guard.py",
+    "src/angerona/resilience/source_stop.py",
     "src/angerona/resilience/supervisor.py",
     "src/angerona/resilience/watchdog.py",
     "src/angerona/startup.py",

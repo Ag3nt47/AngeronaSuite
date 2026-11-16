@@ -242,7 +242,8 @@ def _heartbeat_process_identity(component, record):
     if component.name == "core":
         expected = tuple(part for part in expected if part != "--chill")
     identity = _invocation_identity(process, expected)
-    if identity is None:
+    if identity is None or not _source_epoch_matches(
+            process, getattr(component, "_source_stop_context", None)):
         raise ValueError("Heartbeat process does not match its configured role")
     if record["ts_ns"] / 1e9 < identity["birth"]:
         raise ValueError("Heartbeat predates its current process generation")
@@ -274,7 +275,7 @@ def _heartbeat_process_identity(component, record):
 
 
 def cached_cmdline_probe(*needles: str, psutil_module=None,
-                         expected_argv=None) -> Callable[[], bool]:
+                         expected_argv=None, source_stop_context=None) -> Callable[[], bool]:
     """Return a liveness probe that scans the process table only on adoption.
 
     Heartbeat-less sidecars used to call ``process_iter(cmdline)`` on every
@@ -327,7 +328,7 @@ def cached_cmdline_probe(*needles: str, psutil_module=None,
                         # process_iter info can be cached: confirm fresh argv
                         # and PID generation before adopting this sidecar.
                         identity = _invocation_identity(process, expected)
-                        if identity is None:
+                        if identity is None or not _source_epoch_matches(process, source_stop_context):
                             continue
                         cached_identity = identity
                     elif not command or not all(needle in command for needle in needles):
@@ -345,7 +346,28 @@ def cached_cmdline_probe(*needles: str, psutil_module=None,
     return _probe
 
 
+def _source_epoch_matches(process, context) -> bool:
+    """Bind source adoption to its epoch, in addition to native generation.
+
+    The environment value is only a family reference. It grants no source or
+    installed authority, is never logged, and does not replace native identity.
+    Unavailable process context cannot be adopted by a source supervisor.
+    """
+    if context is None:
+        return True
+    try:
+        from angerona.resilience.source_stop import SOURCE_SESSION_ENV
+
+        return process.environ().get(SOURCE_SESSION_ENV) == context.epoch
+    except Exception:
+        return False
+
+
 # ── detached, windowed spawning ──────────────────────────────────────────────
+class _PeerLaunchHeld(RuntimeError):
+    """A local source gate refused before any child launch was attempted."""
+
+
 def _isolated_peer_argv(argv: list[str]) -> list[str]:
     """Remove implicit CWD/script-directory imports for canonical Python peers.
 
@@ -392,7 +414,7 @@ def _isolated_peer_argv(argv: list[str]) -> list[str]:
 
 
 def spawn_detached(argv: list[str], env: Optional[dict] = None,
-                   window: str = "minimized", *, cwd=None):
+                   window: str = "minimized", *, cwd=None, source_stop_context=None):
     """Start a process fully detached from this one's process group/tree.
 
     window: 'minimized' (own console, minimized), 'hidden' (no window), or
@@ -408,6 +430,19 @@ def spawn_detached(argv: list[str], env: Optional[dict] = None,
         "env": sanitized_child_environment(source=env),
         "close_fds": True,
     }
+    # The environment carries an opaque reference, never admission or STOP
+    # authority. Only an already-admitted ordinary source context may forward
+    # its own epoch; a peer independently validates its native/source scope.
+    if source_stop_context is not None:
+        from angerona.resilience.source_stop import SOURCE_SESSION_ENV, SourceStopContext
+
+        if type(source_stop_context) is not SourceStopContext:
+            raise ValueError("A validated source STOP context is required")
+        if source_stop_context.is_stop_requested() is True:
+            raise _PeerLaunchHeld("The source session has already requested STOP")
+        if source_stop_context.respawn_allowed() is not True:
+            raise _PeerLaunchHeld("The source session's launch admission is held")
+        kwargs["env"][SOURCE_SESSION_ENV] = source_stop_context.epoch
     if cwd is not None:
         kwargs["cwd"] = cwd
     if os.name == "nt":
@@ -629,6 +664,9 @@ class Component:
     launch_notice: str = ""
     # In-memory only: never restore native owners or monotonic leases from disk.
     _startup: Optional[_StartupAttempt] = field(default=None, repr=False)
+    _source_stop_context: object = field(default=None, repr=False)
+    _admission_committed: bool = field(default=False, repr=False)
+    _admission_uncertain: bool = field(default=False, repr=False)
 
 
 class ProcessSupervisor:
@@ -641,7 +679,8 @@ class ProcessSupervisor:
                  monotonic_clock: Callable[[], float] = time.monotonic,
                  initial_backoff_s: float = 1.0,
                  max_backoff_s: float = 60.0,
-                 launch_guard: Optional[Callable[[Component], bool]] = None):
+                 launch_guard: Optional[Callable[[Component], bool]] = None,
+                 source_stop_context=None):
         if (not math.isfinite(initial_backoff_s) or not math.isfinite(max_backoff_s)
                 or initial_backoff_s <= 0 or max_backoff_s < initial_backoff_s):
             raise ValueError("invalid supervisor restart backoff")
@@ -656,6 +695,7 @@ class ProcessSupervisor:
         if launch_guard is not None and not callable(launch_guard):
             raise ValueError("supervisor launch guard must be callable")
         self._launch_guard = launch_guard
+        self._source_stop_context = source_stop_context
         self.state_namespace = safe_name(state_namespace or "ephemeral")
         self._state_store = state_store
         if self._state_store is None and state_namespace:
@@ -664,6 +704,11 @@ class ProcessSupervisor:
                 clock=clock,
             )
         self._stop = threading.Event()
+        self._shutdown_requested = False
+        self._stop_receipts = {}
+        self._stop_close_held = False
+        self._stop_parent_owners = {}
+        self._retirement_custody = None
         self._lifecycle_lock = threading.RLock()
         self._thread: Optional[threading.Thread] = None
         self._tick_count = 0
@@ -734,6 +779,7 @@ class ProcessSupervisor:
     # ── registration ─────────────────────────────────────────────────────────
     def add(self, name: str, argv: list, **kw) -> Component:
         c = Component(name=name, argv=list(argv), **kw)
+        c._source_stop_context = self._source_stop_context
         c.reader = hb.HeartbeatReader(name)
         if self._state_store is not None:
             try:
@@ -952,8 +998,33 @@ class ProcessSupervisor:
         with self._lifecycle_lock:
             return self._spawn_locked(c)
 
+    def _commit_adoption(self, c: Component) -> None:
+        """Record local admission only after the existing role probe succeeds."""
+        captured = getattr(c.running_probe, "retained_identity", None)
+        if callable(captured):
+            c.adopted_identity = captured()
+        elif c._heartbeat_identity is not None:
+            c.adopted_identity = dict(c._heartbeat_identity)
+        c._admission_committed = True
+        c._admission_uncertain = c.proc is None and c.adopted_identity is None
+        c._dead = False
+        if not c.adopted:
+            c.adopted = True
+            self._emit("INFO", f"adopted already-running {c.name} (no duplicate started)",
+                       component=c.name)
+
     def _respawn_blocked(self) -> bool:
-        return self._stop.is_set() or tok.is_standdown_requested()
+        if self._stop.is_set() or self._shutdown_requested:
+            return True
+        context = self._source_stop_context
+        if context is not None:
+            try:
+                return context.respawn_allowed() is not True
+            except Exception:
+                # An uncertain source command cannot authorize termination,
+                # but it must not admit a replacement into a stopped epoch.
+                return True
+        return tok.is_standdown_requested()
 
     def _launch_allowed(self, c: Component) -> bool:
         """Consult a bounded source gate without changing observed liveness.
@@ -989,17 +1060,14 @@ class ProcessSupervisor:
             if c._startup is not None and self._assess(c) != "alive":
                 return False
             c._startup = None
-            captured = getattr(c.running_probe, "retained_identity", None)
-            if callable(captured):
-                c.adopted_identity = captured()
-            c._dead = False
-            if not c.adopted:
-                c.adopted = True
-                self._emit("INFO", f"adopted already-running {c.name} (no duplicate started)",
-                           component=c.name)
+            self._commit_adoption(c)
             return True
         # Only one supervisor may spawn a given component at a time.
         rec, auth = self._authenticated_record(c)
+        if rec is not None or auth not in ("missing", "authenticated"):
+            # A peer was observed without complete local ownership admission.
+            # This cannot later be represented as a never-admitted empty slot.
+            c._admission_uncertain = True
         if c._startup is not None:
             if auth not in ("authenticated", "missing"):
                 c._startup.heartbeat_rejected = True
@@ -1036,6 +1104,7 @@ class ProcessSupervisor:
             return False
         try:
             if self._is_running(c):     # double-check under the lock
+                self._commit_adoption(c)
                 return True
             if self._respawn_blocked():
                 return False
@@ -1059,10 +1128,25 @@ class ProcessSupervisor:
                 if now is None:
                     return False
                 c._durability_next_at = now + self._durability_interval_s
-            c.proc = spawn_detached(c.argv, env=env, window=c.window)
+            spawn_options = {"env": env, "window": c.window}
+            if self._source_stop_context is not None:
+                spawn_options["source_stop_context"] = self._source_stop_context
+            prior_uncertainty = c._admission_uncertain
+            c._admission_uncertain = True  # Dispatch exception may have crossed a native effect boundary.
+            try:
+                c.proc = spawn_detached(c.argv, **spawn_options)
+            except _PeerLaunchHeld:
+                # This typed refusal is produced only before the native call.
+                # Preserve any earlier observed-peer uncertainty, but do not
+                # invent ownership of a child that was never dispatched.
+                c._admission_uncertain = prior_uncertainty
+                return False
+            c._admission_committed = True
+            c._admission_uncertain = False
             c._retained_exit_proven = False
             if self._respawn_blocked():
-                self._terminate(c)
+                if self._retire_for_stop(c) is True:
+                    self._stop_receipts[c.name] = c
                 return False
             self._arm_startup(c)
             c._dead = False
@@ -1085,6 +1169,8 @@ class ProcessSupervisor:
     def _release_when_up(self, c: Component) -> None:
         deadline = time.time() + 5.0
         while time.time() < deadline:
+            if self._respawn_blocked():
+                break
             if self._is_running(c):
                 break
             time.sleep(0.2)
@@ -1202,8 +1288,10 @@ class ProcessSupervisor:
             self._start_locked()
 
     def _start_locked(self) -> None:
+        if self._shutdown_requested:
+            return
         self._stop.clear()
-        if tok.is_standdown_requested():
+        if self._respawn_blocked():
             return
         # Adopt-if-alive: never start a second instance of something already up.
         for c in self.components.values():
@@ -1829,7 +1917,8 @@ class ProcessSupervisor:
             if c.name == "core":
                 expected = tuple(part for part in expected if part != "--chill")
             identity = _invocation_identity(proc, expected)
-            if identity is None or (adopted is not None and identity != adopted):
+            if (identity is None or (adopted is not None and identity != adopted)
+                    or not _source_epoch_matches(proc, self._source_stop_context)):
                 self._emit(
                     "HIGH",
                     f"Refused to terminate adopted {c.name}: invocation identity mismatch.",
@@ -1877,20 +1966,213 @@ class ProcessSupervisor:
             )
             return False
 
-    def stop(self, terminate_children: bool = True) -> None:
-        self._stop.set()
+    def capture_retirement_custody(self):
+        """Retain this registry's identity before shutdown fences hide views.
+
+        This object confers no additional termination authority. Final receipts
+        still come only from the existing retained Job/exact-generation path.
+        """
+        with self._lifecycle_lock:
+            if self._retirement_custody is not None:
+                return self._retirement_custody
+            if os.name == "nt":
+                from angerona.core.windows_process_lease import WindowsProcessLease
+
+                for name, component in self.components.items():
+                    identity = component.adopted_identity or component._heartbeat_identity
+                    parent = identity.get("parent") if isinstance(identity, dict) else None
+                    if component.proc is not None or identity is None:
+                        continue
+                    if component._peer_exit_owner is None and not component._peer_exit_close_failed:
+                        try:
+                            import psutil
+
+                            expected = tuple(arg for arg in component.argv
+                                             if component.name != "core" or arg != "--chill")
+                            with WindowsProcessLease(identity["pid"], identity["birth"], identity["image"],
+                                                     lifetime=5.0, query_only=True) as lease:
+                                process = psutil.Process(identity["pid"])
+                                if (_invocation_identity(process, expected) != identity
+                                        or not _source_epoch_matches(process, self._source_stop_context)):
+                                    raise ValueError("Adopted STOP invocation changed")
+                                lease.validate(alive=True)
+                                # Heartbeatless presentation helpers retain
+                                # the same native exit custody as sensor peers.
+                                component._peer_exit_owner = _RetainedPeerExit(lease, expected)
+                        except Exception:
+                            pass
+                    if parent is None or name in self._stop_parent_owners:
+                        continue
+                    try:
+                        # Capture query/SYNCHRONIZE custody before the source
+                        # STOP makes a redirector exit. No PID mutation rights
+                        # or environment-selected discovery are added here.
+                        with WindowsProcessLease(*parent, lifetime=5.0, query_only=True) as lease:
+                            self._stop_parent_owners[name] = _RetainedPeerExit(lease, tuple(component.argv))
+                    except Exception:
+                        # Retain unknown rather than manufacturing a receipt
+                        # from the disappearance of a numerical parent PID.
+                        pass
+            custody = (self, self.components, tuple(
+                (name, component, tuple(component.argv))
+                for name, component in sorted(self.components.items())))
+            self._retirement_custody = custody
+            return custody
+
+    def shutdown_retired(self, custody) -> bool:
+        """Read retained STOP outcomes; absence, timeouts and close errors fail."""
+        if not self._shutdown_requested or not self._stop.is_set() or self._stop_close_held:
+            return False
+        try:
+            owner, registry, entries = custody
+            if owner is not self or registry is not self.components:
+                return False
+            current = tuple((name, component, tuple(component.argv))
+                            for name, component in sorted(self.components.items()))
+            if (len(current) != len(entries) or any(
+                    name != old_name or component is not old_component or argv != old_argv
+                    for (name, component, argv), (old_name, old_component, old_argv)
+                    in zip(current, entries))):
+                return False
+            if any(self._stop_receipts.get(name) is not component for name, component, _argv in entries):
+                return False
+            thread = self._thread
+            return thread is None or not thread.is_alive()
+        except Exception:
+            return False
+
+    def _retire_for_stop(self, component: Component) -> bool:
+        """Preserve exact ownership and require signal-proven private Jobs."""
+        owner = component.proc
+        if owner is not None and getattr(owner, "owns_descendants", False):
+            capture_failed = False
+            try:
+                snapshot = getattr(owner, "tree_retirement_snapshot", lambda: None)()
+                if (type(snapshot) is dict and snapshot.get("signals_proven") is True
+                        and snapshot.get("handles_closed") is True
+                        and snapshot.get("close_held") is False
+                        and snapshot.get("error_type") == ""):
+                    component.proc = None
+                    component._dead = True
+                    component._startup = None
+                    return True
+                prepare = getattr(owner, "prepare_tree_retirement", None)
+                if callable(prepare):
+                    prepare(timeout=3.0)
+                cut = getattr(owner, "tree_retirement_snapshot", lambda: None)()
+                capture_failed = not (type(cut) is dict and cut.get("cut_ready") is True
+                                      and cut.get("error_type") == "")
+            except Exception:
+                capture_failed = True
+            # Observational failure is not a veto over an authenticated
+            # operator's attempt on this already-retained private Job. The
+            # native owner independently revalidates constructor lifetimes and
+            # may dispatch with an incomplete cut; it adds no PID lookup.
+            try:
+                from angerona.core.windows_child_job import OwnedWindowsChild
+
+                if type(owner) is not OwnedWindowsChild:
+                    return False
+                owner.terminate_for_operator_stop()
+            except Exception:
+                return False
+            if capture_failed:
+                # Preserve incomplete cut/queries. Dispatch is not a receipt.
+                return False
+            try:
+                owner.wait(timeout=3.0)
+                owner.wait_tree(timeout=3.0)
+                owner.close()
+            except Exception:
+                return False
+            proof = owner.tree_retirement_snapshot()
+            if (type(proof) is not dict or proof.get("signals_proven") is not True
+                    or proof.get("handles_closed") is not True
+                    or proof.get("close_held") is not False or proof.get("error_type") != ""):
+                return False
+            component.proc = None
+            component._dead = True
+            component._startup = None
+            return True
+        elif owner is None:
+            # A peer may have observed STOP and exited before Core cleanup.
+            # Its retained query handle proves that exact generation's exit;
+            # PID absence alone cannot establish it. Never discover siblings.
+            retained = getattr(component, "_peer_exit_owner", None)
+            adopted = component.adopted_identity or component._heartbeat_identity
+            parent = adopted.get("parent") if isinstance(adopted, dict) else None
+            parent_owner = self._stop_parent_owners.get(component.name)
+            if (component._admission_committed is False and component._admission_uncertain is False
+                    and component.adopted is False and adopted is None and retained is None
+                    and component.restarts == 0 and component._startup is None):
+                # A registered slot can be held by policy before any launch or
+                # adoption commits. This lifecycle fact needs no discovery or
+                # termination of a similarly named foreign process.
+                return True
+            if adopted is not None and retained is not None and not self._exit_owner_matches(retained, adopted):
+                return False
+            if parent is not None:
+                parent_record = {"pid": parent[0], "birth": parent[1], "image": parent[2]}
+                if parent_owner is None or not self._exit_owner_matches(parent_owner, parent_record):
+                    return False
+            if retained is not None and retained.exited() is True:
+                return parent is None or parent_owner is not None and parent_owner.exited() is True
+            if component.adopted_identity is None:
+                # No launch/adoption ever committed: do not infer that an
+                # authenticated-but-unobserved peer has disappeared.
+                if retained is None:
+                    # A missing/unreadable heartbeat or a numerical PID alone
+                    # cannot establish an adopted process's native retirement.
+                    return False
+            if retained is None:
+                return False
+            if self._terminate(component) is not True or retained.exited() is not True:
+                return False
+            return parent is None or parent_owner is not None and parent_owner.exited() is True
+        return self._terminate(component)
+
+    @staticmethod
+    def _exit_owner_matches(owner, identity) -> bool:
+        """Compare only captured native identity; never reopen a numerical PID."""
+        try:
+            retained = owner.identity
+            return (retained.pid == identity["pid"]
+                    and abs(retained.create_time - identity["birth"]) <= 0.001
+                    and os.path.normcase(os.path.realpath(retained.image))
+                    == os.path.normcase(os.path.realpath(identity["image"])))
+        except Exception:
+            return False
+
+    def stop(self, terminate_children: bool = True) -> bool:
+        custody = self.capture_retirement_custody()
+        self.request_stop()
         with self._lifecycle_lock:
             if terminate_children:
                 for c in self.components.values():
-                    self._terminate(c)
+                    if self._stop_receipts.get(c.name) is c:
+                        continue
+                    try:
+                        retired = self._retire_for_stop(c) is True
+                    except Exception:
+                        retired = False
+                    if retired:
+                        self._stop_receipts[c.name] = c
             for c in self.components.values():
-                self._close_peer_exit_owner(c)
+                if terminate_children and self._stop_receipts.get(c.name) is not c:
+                    continue  # Preserve exact query custody for a later retry.
+                if not self._close_peer_exit_owner(c):
+                    self._stop_close_held = True
+                parent_owner = self._stop_parent_owners.get(c.name)
+                if parent_owner is not None and not parent_owner.close():
+                    self._stop_close_held = True
         thread = self._thread
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=2.0)
+        return self.shutdown_retired(custody)
 
     def request_stop(self) -> None:
         """Close respawn admission without waiting on an in-flight launch."""
+        self._shutdown_requested = True
         self._stop.set()
 
 

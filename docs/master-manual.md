@@ -2,15 +2,40 @@
 Word source SHA256: 23cba784068a77a6459f1986f1dc7de8bf46b6e52615caacc431786a6aac85c8
 Coverage: 5549 text nodes; 5187 paragraphs; 86 tables; 12 figures. -->
 
-Current source maintenance **1.15.1** · **13 November 2026**
+Current source maintenance **1.15.2** · **16 November 2026**
 
-[Latest 1.15.1 source companion](releases/v1.15.1.md) · [Security patches and remaining exposure](releases/security-worklist-review-2026-11-13.md)
+[Latest 1.15.2 source companion](releases/v1.15.2.md) · [Security patches and remaining exposure](releases/security-worklist-review-2026-11-13.md)
 
-The Word/PDF manual edition is older: **1.15.0** · **9 November 2026**. The body below is an exact readable export of that edition, not a rewritten 1.15.1 Word manual. Read the source companions first for current maintenance changes, watchdog modes, action holds and validation limits.
+The Word/PDF manual edition is older: **1.15.0** · **9 November 2026**. The body below is an exact readable export of that edition, not a rewritten 1.15.2 Word manual. Read the source companions first for current maintenance changes, watchdog modes, action holds and validation limits.
 
 [Download older PDF edition](../Angerona_Master_Manual.pdf) · [Download older Word edition](https://raw.githubusercontent.com/Ag3nt47/AngeronaSuite/main/Angerona_Master_Manual.docx) · [Repository guide](../README.md)
 
-Current **1.15.1 source follow-up**:
+Current **1.15.2 source follow-up**:
+
+The ordinary Windows desktop source app has separate source-session STOP
+coordination. Dashboard STOP and tray Quit share modeless confirmation controls.
+Each session starts unlocked; the optional Lock STOP prevents accidental use of
+these local controls. Unlocking and confirming Stop are separate actions. This
+lock does not protect against the same user, an administrator or the kernel, and
+does not grant or replace installed-service authorization.
+
+An accepted source STOP inhibits its captured family's automatic recovery.
+Shutdown targets exact Angerona-owned process generations and retained workers;
+unrelated Python applications and shared AI servers remain running. Releasing a
+configured model's residency on a shared server also affects that model's
+residency for other applications. Downloaded models, preferences, alerts and
+authenticated evidence are preserved. Unknown cleanup remains incomplete;
+closing a window or returning from a cleanup callback is not exit proof.
+
+The pre-bridge targeted cohort passed **682 tests with 2 skips**. The canonical
+launcher bridge correction, fresh checks after it, live-family STOP acceptance,
+and exact-commit GitHub publication remain pending. Earlier private native-token
+checks do not prove complete live-family shutdown or signed installed Protect.
+Read the [current companion](releases/v1.15.2.md) for revision-bound workflow,
+validation and remaining limits. These source notes are maintained separately
+from the preserved **1.15.0 / 9 November Word/PDF edition**.
+
+Previous **1.15.1 source follow-up**:
 
 - File Integrity Monitor receipt issuance and historical Red Team verification now use the same current per-root coverage schema, root lists, digests and aggregate counters. This corrects a mismatch that discarded genuine complete scan evidence. Incomplete, budget-exhausted or inconsistent coverage remains ineligible; exact object, lease, generation and signature checks still apply. A test marker alone earns no detection credit.
 - Mobile bridge health preserves a failed send/receive receipt at **40**, while displaying any separate authorization or lockout hold. An authorization-only or lockout hold remains **60**; a receipt-authority fault takes priority at **0**. These are module health scores, not protection percentages. The change does not authorize mobile commands or claim recipient delivery.
@@ -18,7 +43,7 @@ Current **1.15.1 source follow-up**:
 - **Coverage warnings stay visible without implying an attacker.** Only exact typed FIM or network incomplete-telemetry records qualify for this health classification. High severity and original evidence remain. Genuine file/network findings retain their threat handling, and filenames containing lifecycle phrases cannot hide real file changes. Unknown or malformed records remain conservative; classification grants no response authority.
 - **A held STOP is described accurately.** The notice explains that authorization was not established, Angerona has not exited and the notice cannot verify protection. It no longer assumes a declined UAC prompt. Protected control admission and cleanup behavior are unchanged.
 
-These are focused source and fixture corrections. An earlier Python 3.13 hosted run passed 17,721 tests with 54 skips; the Python 3.12 lane was interrupted at its 60-minute job limit and remains incomplete. The matrix's finite job budget becomes 75 minutes without omitting tests. Fresh exact-commit validation remains separate acceptance work; this note does not claim that all GitHub checks are green or that the running application has accepted this follow-up. See the [current release companion](releases/v1.15.1.md#hosted-check-reconciliation) for revision-bound results and remaining scope. The exported **1.15.0 Word/PDF body below remains unchanged**.
+These are focused source and fixture corrections. An earlier Python 3.13 hosted run passed 17,721 tests with 54 skips; the Python 3.12 lane was interrupted at its 60-minute job limit and remains incomplete. The matrix's finite job budget becomes 75 minutes without omitting tests. Fresh exact-commit validation remains separate acceptance work; this note does not claim that all GitHub checks are green or that the running application has accepted this follow-up. See the [1.15.1 release companion](releases/v1.15.1.md#hosted-check-reconciliation) for revision-bound results and remaining scope. The exported **1.15.0 Word/PDF body below remains unchanged**.
 
 Earlier source maintenance companion **9 November 2026**: [Watchdog and Core hardening](resilience-recovery.md#watchdog-hardening-in-the-8-november-source-update), [recovery profile migration](safe-startup-recovery.md#recovery-profile-migration). These companion chapters provide additional source and recovery context.
 

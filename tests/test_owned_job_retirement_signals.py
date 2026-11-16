@@ -90,6 +90,44 @@ def test_current_cut_accepts_stable_historical_total_and_retained_exited_root(ow
     assert sample.root.closes == sample.job_lifetime.closes == 1
 
 
+@pytest.mark.parametrize("natural_exit", ["root", "runner", "all"])
+def test_stop_honored_between_capture_and_dispatch_keeps_original_signal_cut(owned, natural_exit):
+    sample, capsule = prepare(owned)
+    captured = tuple(capsule.processes)
+    handles = tuple(capsule.handles)
+    original_roster, original_total = capsule.roster, capsule.total
+    pids = tuple(sample.members[0])
+    exiting = (pids[:1] if natural_exit == "root" else pids[1:]
+               if natural_exit == "runner" else pids)
+    owned.native.exited.update(exiting)
+    sample.owner.terminate()
+    assert sample.model.termination_calls == [1]
+    assert capsule.ready and capsule.dispatched and not capsule.failure
+    assert tuple(capsule.processes) == captured
+    assert capsule.roster == original_roster and capsule.total == original_total
+    sample.owner.wait(timeout=0.2)
+    sample.owner.wait_tree(timeout=0.2)
+    sample.owner.close()
+    assert sample.owner._tree_retirement is capsule
+    assert all(owned.native.closed.count(handle) == 1 for handle in handles)
+    assert sample.owner.tree_retirement_snapshot()["signals_proven"] is True
+    assert sample.owner.tree_retirement_snapshot()["handles_closed"] is True
+
+
+def test_smaller_roster_before_dispatch_does_not_replace_missing_member_signal(owned):
+    sample, capsule = prepare(owned)
+    runner = sample.members[0][1]
+    sample.members[:] = [[sample.owner.pid]]
+    owned.transport.stubborn.add(runner)
+    sample.owner.terminate()
+    assert capsule.ready and not capsule.failure
+    with pytest.raises(subprocess.TimeoutExpired):
+        sample.owner.wait_tree(timeout=0.1)
+    assert not capsule.waited
+    assert runner not in owned.native.exited
+    assert_lifetime_held(sample)
+
+
 def test_live_root_absent_from_complete_current_list_is_held_but_exact_stop_is_attempted(owned):
     sample = owned.make()
     sample.members[:] = [[]]
@@ -101,12 +139,17 @@ def test_live_root_absent_from_complete_current_list_is_held_but_exact_stop_is_a
     assert_lifetime_held(sample)
 
 
-@pytest.mark.parametrize("change", ["counter-before-dispatch", "counter-after-dispatch", "new-roster-after-dispatch"])
+@pytest.mark.parametrize("change", ["counter-before-dispatch", "counter-after-dispatch",
+                                    "new-roster-before-dispatch", "new-roster-after-dispatch"])
 def test_post_cut_accounting_or_membership_change_never_becomes_completion(owned, change):
     sample, capsule = prepare(owned)
     captured = tuple(capsule.processes)
     if change == "counter-before-dispatch":
         sample.model.retirement_total += 1
+    elif change == "new-roster-before-dispatch":
+        # Keep counts stable while replacing one original member with an
+        # uncaptured generation; a subset allowance must still reject this.
+        sample.members[:] = [[sample.owner.pid, 7999]]
     sample.owner.terminate()
     assert sample.model.termination_calls == [1]
     if change == "counter-after-dispatch":
@@ -210,6 +253,99 @@ def test_prepare_native_query_failure_still_dispatches_exact_existing_job(owned)
     assert ollama._owned_services[sample.key] is sample.owner
     assert result["records"][0]["current_job_signal_proof"]["cut_ready"] is False
     assert_lifetime_held(sample)
+
+
+def test_operator_stop_dispatches_original_job_after_query_failure_without_clean_receipt(owned):
+    sample = owned.make(register=False)
+    other = owned.make((8101, 8102), register=False)
+    owned.native.fail[("retirement-accounting", sample.model.token)] = OSError("inert accounting failure")
+    with pytest.raises(OSError):
+        sample.owner.prepare_tree_retirement(timeout=1.0)
+    capsule = sample.owner._tree_retirement
+    captured_refs, opened = capsule.refs, tuple(owned.native.opened)
+    failure = capsule.failure
+    sample.owner.terminate_for_operator_stop()
+    assert sample.model.termination_calls == [1]
+    assert other.model.termination_calls == []
+    assert not set(other.members[0]).intersection(owned.native.exited)
+    assert sample.owner._tree_retirement is capsule and capsule.refs == captured_refs
+    assert capsule.failure == failure and not capsule.ready and not capsule.waited
+    assert tuple(owned.native.opened) == opened
+    with pytest.raises(jobs.NativeOwnershipObservationError):
+        sample.owner.wait_tree(timeout=0.2)
+    assert_lifetime_held(sample)
+    assert not other.root.closed and not other.job_lifetime.closed
+
+
+def test_operator_stop_can_dispatch_after_query_close_failure_without_retrying_unknown_handle(owned):
+    sample, capsule = prepare(owned)
+    sample.owner.terminate()
+    sample.owner.wait_tree(timeout=0.2)
+    attempted = []
+    def lost_ack(operation, subject):
+        if operation == "close" and not attempted:
+            attempted.append(subject)
+            raise OSError("inert query close acknowledgement lost")
+    owned.native.hook = lost_ack
+    with pytest.raises(jobs.NativeOwnershipObservationError, match="close remains unproven"):
+        sample.owner.close()
+    owned.native.hook = None
+    assert capsule.close_started and capsule.close_held
+    with pytest.raises(jobs.NativeOwnershipObservationError):
+        sample.owner.terminate()  # Normal caller semantics stay closed.
+    closed_before = tuple(owned.native.closed)
+    sample.owner.terminate_for_operator_stop()
+    assert sample.model.termination_calls == [1, 1]
+    assert tuple(owned.native.closed) == closed_before
+    assert owned.native.closed.count(attempted[0]) == 1
+    assert capsule.close_started and capsule.close_held and not capsule.closed
+    assert not capsule.ready and not capsule.waited and capsule.failure
+    assert_lifetime_held(sample)
+
+
+@pytest.mark.parametrize("change", ["process-none", "job-none", "job-handle-none",
+                                    "process-replaced", "job-replaced", "job-handle-replaced",
+                                    "pid-replaced", "epoch-changed", "process-closed",
+                                    "job-handle-closed", "foreign-capsule", "closed-capsule"])
+def test_operator_stop_refuses_changed_closed_or_uncertain_primary_lifetimes(owned, change):
+    sample, capsule = prepare(owned)
+    other = owned.make((8101, 8102), register=False)
+    if change == "process-none":
+        sample.owner._process = None
+    elif change == "job-none":
+        sample.owner._job = None
+    elif change == "job-handle-none":
+        sample.job._handle = None
+    elif change == "process-replaced":
+        sample.owner._process = owned.native.lifetime("process", sample.owner.pid)
+    elif change == "job-replaced":
+        sample.owner._job = other.job
+    elif change == "job-handle-replaced":
+        sample.job._handle = other.job_lifetime
+    elif change == "pid-replaced":
+        sample.owner.pid += 1
+    elif change == "epoch-changed":
+        sample.owner._owned_observation_epoch += 1
+    elif change == "process-closed":
+        sample.root.Close()
+    elif change == "job-handle-closed":
+        sample.job_lifetime.Close()
+    elif change == "foreign-capsule":
+        other.owner.prepare_tree_retirement(timeout=1.0)
+        sample.owner._tree_retirement = other.owner._tree_retirement
+    else:
+        capsule.closed = True
+    before = tuple(owned.native.calls)
+    try:
+        with pytest.raises(jobs.NativeOwnershipObservationError):
+            sample.owner.terminate_for_operator_stop()
+        assert tuple(owned.native.calls) == before
+        assert sample.model.termination_calls == [] and other.model.termination_calls == []
+    finally:
+        # Restore only inert aliases so the shared fixture can discard them;
+        # no native close/reopen or retirement repair is performed here.
+        sample.owner._job = sample.job
+        sample.job._handle = sample.job_lifetime
 
 
 def test_all_captured_waits_share_one_remaining_deadline(owned):

@@ -49,6 +49,17 @@ PING_POLL_INTERVAL_S = 2.0
 RING_RETRY_INTERVAL_S = 30.0
 
 
+def _source_context_standdown(context) -> bool:
+    """An unknown/missing supersession marker cannot authorize self-exit."""
+    try:
+        if context.is_stop_requested() is True:
+            return True
+        superseded = getattr(context, "is_superseded", None)
+        return callable(superseded) and superseded() is True
+    except Exception:
+        return False
+
+
 _COMMAND_SECRET_PATTERNS = (
     re.compile(
         r"(?i)((?:--?|/)?(?:password|passwd|pwd|token|api[-_]?key|"
@@ -178,11 +189,12 @@ class RawProcessSensor:
 
 class ScannerHost:
     def __init__(self, interval: float = 1.0, ring_name: str = "telemetry",
-                 token_raw: bytes | None = None):
+                 token_raw: bytes | None = None, source_stop_context=None):
         interval = float(interval)
         if not math.isfinite(interval) or interval <= 0:
             raise ValueError("Scanner interval must be a finite positive number")
         self.interval = max(0.05, interval)
+        self._source_stop_context = source_stop_context
         self.ring = None
         self._ring_name = ring_name
         self._ring_state, self._ring_error = "unmeasured", ""
@@ -301,11 +313,14 @@ class ScannerHost:
         if not self._run_claim.acquire(blocking=False):
             raise RuntimeError("ScannerHost can only run once")
         try:
+            if not self._stop and self._standdown_requested():
+                self._authenticated_standdown = True
+                return
             self._last_ping = self._read_ping()
             self._write_status()
             self._last_status = self._last_ping_poll = time.monotonic()
             while not self._stop:
-                if tok.is_standdown_requested() is True:
+                if self._standdown_requested():
                     self._authenticated_standdown = True
                     break
                 now = time.monotonic()
@@ -340,6 +355,12 @@ class ScannerHost:
                 self._stop_event.wait(self.interval)
         finally:
             self._shutdown()
+
+    def _standdown_requested(self) -> bool:
+        context = getattr(self, "_source_stop_context", None)
+        if context is not None:
+            return _source_context_standdown(context)
+        return tok.is_standdown_requested() is True
 
     def _close_ring(self) -> None:
         if self.ring is not None and not self._ring_close_failed:
@@ -384,6 +405,17 @@ def _run_gui_worker(host: ScannerHost, on_authenticated_stop: Callable[[], None]
 
 
 def main(argv: list[str] | None = None) -> int:
+    from angerona.resilience.source_stop import SOURCE_SESSION_ENV, join_source_session
+
+    reference = os.environ.get(SOURCE_SESSION_ENV)
+    source_stop_context = join_source_session(hb._data_dir(), epoch=reference, role="peer")
+    if reference is not None and source_stop_context is None:
+        return 2
+    if source_stop_context is not None:
+        if _source_context_standdown(source_stop_context):
+            return 0
+        if source_stop_context.respawn_allowed() is not True:
+            return 2
     argv = list(sys.argv[1:] if argv is None else argv)
     interval = float(os.environ.get("ANGERONA_SCANNER_INTERVAL", "1.0"))
     if argv and argv[0].replace(".", "", 1).isdigit():
@@ -391,7 +423,10 @@ def main(argv: list[str] | None = None) -> int:
     # Internal component heartbeats use the ACL-protected per-install authority.
     # ANGERONA_WATCHDOG_TOKEN belongs only to the compiled parent handshake and
     # must not silently become a different supervisor trust root.
-    host = ScannerHost(interval=interval)
+    host_options = {}
+    if source_stop_context is not None:
+        host_options["source_stop_context"] = source_stop_context
+    host = ScannerHost(interval=interval, **host_options)
 
     # Themed window (matches Angerona's look) unless disabled or unavailable.
     # The sensor loop runs on a background thread so the window stays responsive

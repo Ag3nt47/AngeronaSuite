@@ -18,9 +18,9 @@ explain evidence and propose next steps.
 [![Security](https://github.com/Ag3nt47/AngeronaSuite/actions/workflows/security.yml/badge.svg)](https://github.com/Ag3nt47/AngeronaSuite/actions/workflows/security.yml)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-**Current source preview: 1.15.1** · [Maintenance release notes](docs/releases/v1.15.1.md)
+**Current source preview: 1.15.2** · [Maintenance release notes](docs/releases/v1.15.2.md)
 
-**[Install](#choose-your-installation)** · **[What's new](#whats-new-in-1151)** · **[Master Manual](docs/master-manual.md)** ([1.15.0 PDF](Angerona_Master_Manual.pdf)) · **[Security flow](docs/security-flow.md)** · **[Changelog](CHANGELOG.md)** · **[Release status](#current-development-v1151)**
+**[Install](#choose-your-installation)** · **[What's new](#whats-new-in-1152)** · **[Master Manual](docs/master-manual.md)** ([1.15.0 PDF](Angerona_Master_Manual.pdf)) · **[Security flow](docs/security-flow.md)** · **[Changelog](CHANGELOG.md)** · **[Release status](#current-development-v1152)**
 
 ## See Angerona in action
 
@@ -57,6 +57,17 @@ perform no host actions.
 | [![Red Team overall progress and caught versus missed checks with synthetic demonstration data](assets/screenshots/red-team-progress-demo.png)](docs/security-flow.md) | [![Verified step diagnostics and proposed next steps with synthetic demonstration data](assets/screenshots/red-team-diagnostics-demo.png)](docs/security-flow.md) |
 | [![Final Red Team outcome badge with synthetic demonstration data](assets/screenshots/red-team-passing-demo.png)](docs/security-flow.md) | [![Component heartbeat EKGs with synthetic demonstration data](assets/screenshots/component-heartbeats-demo.png)](docs/live-debug-harness.md) |
 | [![Stable heartbeat detail review with synthetic demonstration data](assets/screenshots/heartbeat-details-demo.png)](docs/live-debug-harness.md) | DEMO only: simulation outcomes do not establish real-world detection coverage. |
+
+<details>
+<summary>New in 1.15.2: session STOP, lock and unlock controls (DEMO)</summary>
+
+[![Synthetic Angerona STOP controls: modeless session lock, separate unlock and stop confirmation, and owned-process shutdown scope](assets/screenshots/stop-controls-demo.png)](docs/releases/v1.15.2.md#operator-controls)
+
+Synthetic UI preview rendered from the actual dialog code. No host data or running
+security engine is shown. The session lock controls dashboard/tray actions and
+does not provide operating-system tamper protection.
+
+</details>
 
 <details>
 <summary>New in 1.15.1: optional watchdog heartbeat and signing controls (DEMO)</summary>
@@ -134,22 +145,41 @@ and separate installation staging require additional space.
 | macOS source setup | 0.50–0.75 GB | 1.5–3 GB |
 | Linux source setup | 0.30–0.50 GB | 1–2 GB |
 
-## Current development: v1.15.1
+## Current development: v1.15.2
 
 **Source preview.** A genuine Source Observe network-containment gap remains
 open. Earlier controlled response validation and a combined SpywareGuard/Zero-Breach
 run remain dated evidence. That scan had findings and incomplete coverage; it
 is not a clean-PC verdict or live acceptance of this maintenance revision.
 Controlled results and remaining coverage limits are documented in the
-[current release notes](docs/releases/v1.15.1.md).
+[current release notes](docs/releases/v1.15.2.md).
 
-Further reading: [13 November security review and remaining exposure](docs/releases/security-worklist-review-2026-11-13.md) · [current release notes](docs/releases/v1.15.1.md) · [earlier 1.15 security summary (Word)](https://github.com/Ag3nt47/AngeronaSuite/raw/refs/heads/main/docs/releases/Angerona_1.15_Security_Patch_Summary.docx) · [Master Manual (Word)](https://github.com/Ag3nt47/AngeronaSuite/raw/refs/heads/main/Angerona_Master_Manual.docx)
+Further reading: [13 November security review and remaining exposure](docs/releases/security-worklist-review-2026-11-13.md) · [current release notes](docs/releases/v1.15.2.md) · [earlier 1.15 security summary (Word)](https://github.com/Ag3nt47/AngeronaSuite/raw/refs/heads/main/docs/releases/Angerona_1.15_Security_Patch_Summary.docx) · [Master Manual (Word)](https://github.com/Ag3nt47/AngeronaSuite/raw/refs/heads/main/Angerona_Master_Manual.docx)
 
 The downloadable Word/PDF manual is the earlier **1.15.0 / 9 November** edition.
-The [current source companion](docs/releases/v1.15.1.md) and
-[readable manual introduction](docs/master-manual.md) explain the 1.15.1 changes.
+The [current source companion](docs/releases/v1.15.2.md) and
+[readable manual introduction](docs/master-manual.md) explain the current source changes.
 
-## What's new in 1.15.1
+## What's new in 1.15.2
+
+- **Source-session STOP:** the ordinary Windows desktop app coordinates
+  shutdown with its own admitted watchdogs and scanner, separately from installed
+  service authorization. An accepted STOP fences automatic recovery until an
+  explicit new launch. Unrelated Python programs remain running.
+- **Optional lock, unlock and confirm:** dashboard STOP and tray Quit share one
+  modeless window, initially unlocked. Lock prevents accidental use of these
+  controls; unlocking and confirming Stop are separate actions. This session
+  lock is not a Windows security boundary or installed-service authorization.
+- **Verified cleanup:** retained native process ownership and real worker exit
+  determine completion. An unavailable or incomplete cleanup remains visible.
+  See [scope and validation](docs/releases/v1.15.2.md).
+
+The pre-bridge targeted checks passed **682 tests with 2 skips**. The canonical
+launcher bridge is being corrected; fresh bridge and live-family STOP acceptance
+remain pending. These results do not certify the changed bridge or installed
+Protect. Current results belong to their [recorded revision and scope](docs/releases/v1.15.2.md#validation).
+
+## Previous maintenance: 1.15.1
 
 - **Third-watchdog choices:** optional ordinary-user monitoring is off by default
   and clearly marked reduced protection. A separate signature check opens new

@@ -72,8 +72,9 @@ def _blackbox_script():
     return p if p.exists() else None
 
 
-def _cmdline_probe(*needles: str, expected_argv=None):
-    return cached_cmdline_probe(*needles, expected_argv=expected_argv)
+def _cmdline_probe(*needles: str, expected_argv=None, source_stop_context=None):
+    return cached_cmdline_probe(*needles, expected_argv=expected_argv,
+                                source_stop_context=source_stop_context)
 
 
 def _refresh_heartbeat(writer, token_raw: bytes | None = None):
@@ -97,9 +98,14 @@ def _refresh_heartbeat(writer, token_raw: bytes | None = None):
         return replacement
 
 
-def _standdown_requested() -> bool:
+def _standdown_requested(source_stop_context=None) -> bool:
     """Treat an unreadable command as invalid without killing supervision."""
     try:
+        if source_stop_context is not None:
+            if source_stop_context.is_stop_requested() is True:
+                return True
+            superseded = getattr(source_stop_context, "is_superseded", None)
+            return callable(superseded) and superseded() is True
         return tok.is_standdown_requested()
     except Exception as exc:
         diag.write_status(
@@ -189,6 +195,20 @@ def _finish_deadman(owner, supervisor, writer, publish, reason):
 
 
 def main(argv: list[str] | None = None) -> int:
+    from angerona.resilience.source_stop import SOURCE_SESSION_ENV, join_source_session
+
+    # Join once. Automatic recovery stays attached to its original epoch even
+    # after an explicit newer source session becomes current. The reference is
+    # independently admitted against this process's native identity and paths.
+    reference = os.environ.get(SOURCE_SESSION_ENV)
+    source_stop_context = join_source_session(hb._data_dir(), epoch=reference, role="peer")
+    if reference is not None and source_stop_context is None:
+        return 2
+    if source_stop_context is not None:
+        if _standdown_requested(source_stop_context):
+            return 0
+        if source_stop_context.respawn_allowed() is not True:
+            return 2
     token_hex = os.environ.get("ANGERONA_WATCHDOG_TOKEN", "")
     try:
         token_raw = bytes.fromhex(token_hex) if token_hex else b""
@@ -216,10 +236,14 @@ def main(argv: list[str] | None = None) -> int:
                 pass
     except Exception:
         forward_event = None
+    supervisor_options = {}
+    if source_stop_context is not None:
+        supervisor_options["source_stop_context"] = source_stop_context
     sup = ProcessSupervisor(
         poll_interval=1.0,
         on_event=forward_event,
         state_namespace="peer-watchdog",
+        **supervisor_options,
     )
     source_integrity = _prepare_source_guard(sup)
 
@@ -267,7 +291,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     if bb is not None and blackbox_enabled:
         sup.add("blackbox", [pyw, str(bb)], window="hidden",
-                running_probe=_cmdline_probe("blackbox_recorder.py", expected_argv=[pyw, str(bb)]))
+                running_probe=_cmdline_probe("blackbox_recorder.py", expected_argv=[pyw, str(bb)],
+                    source_stop_context=source_stop_context))
 
     sup.start()   # adopt-if-alive: never double-starts what's already running
 
@@ -303,7 +328,8 @@ def main(argv: list[str] | None = None) -> int:
         supervision_current = sup.heartbeat_allowed()
         if supervision_current:
             beat = _refresh_heartbeat(beat)
-        if _standdown_requested():
+        if (_standdown_requested(source_stop_context) if source_stop_context is not None
+                else _standdown_requested()):
             shutdown_reason = "authenticated stand-down"
             if deadman is not None:
                 deadman.request_stop(shutdown_reason)

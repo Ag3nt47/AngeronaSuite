@@ -421,12 +421,14 @@ def build_status_widget(component: str, title: str | None = None):
     return MonitorWidget()
 
 
-def run_window(component: str, title: str | None = None, show: bool = False) -> int:
+def run_window(component: str, title: str | None = None, show: bool = False,
+               *, source_stop_observer=None) -> int:
     try:
         from PySide6.QtWidgets import QApplication, QMainWindow
     except Exception:
-        return _run_headless(component)
+        return _run_headless(component, source_stop_observer=source_stop_observer)
     app = QApplication.instance() or QApplication(sys.argv)
+    source_stop_timer = None
     qss = _qss()
     if qss:
         app.setStyleSheet(qss)
@@ -446,12 +448,22 @@ def run_window(component: str, title: str | None = None, show: bool = False) -> 
         from angerona.gui.header_controls import install_global_window_reveal
         install_global_window_reveal(win, config=motion_config)
         win.showMinimized()
-    return app.exec()
+    if source_stop_observer is not None:
+        from angerona.resilience.source_stop_peer import install_qt_stop
+
+        source_stop_timer = install_qt_stop(app, source_stop_observer)
+    try:
+        return app.exec()
+    finally:
+        if source_stop_timer is not None:
+            source_stop_timer.stop()
 
 
-def _run_headless(component: str) -> int:
+def _run_headless(component: str, *, source_stop_observer=None) -> int:
     try:
         while True:
+            if source_stop_observer is not None and source_stop_observer.exit_requested():
+                return 0
             st = _read_status(component)
             print(f"[{component}] hb={_hb_state(component)} state={st.get('state')} "
                   f"pid={st.get('pid')} rss={st.get('rss_mb')}", flush=True)
@@ -467,7 +479,22 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--title", default=None)
     ap.add_argument("--show", action="store_true")
     a = ap.parse_args(argv)
-    return run_window(a.component, a.title, a.show)
+    from angerona.resilience.source_stop_peer import SourceSidecarAdmissionError, admit_source_sidecar
+
+    try:
+        source_stop = admit_source_sidecar(hb._data_dir())
+    except SourceSidecarAdmissionError:
+        return 2
+    if source_stop is not None and source_stop.exit_requested():
+        return 0
+    try:
+        if source_stop is not None:
+            source_stop.start()
+            return run_window(a.component, a.title, a.show, source_stop_observer=source_stop)
+        return run_window(a.component, a.title, a.show)
+    finally:
+        if source_stop is not None:
+            source_stop.stop(timeout=2.0)
 
 
 if __name__ == "__main__":

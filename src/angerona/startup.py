@@ -1457,6 +1457,43 @@ def _check_installed_startup_request(
         raise StartupError("Open setup from the Advanced dashboard after explicitly requesting elevation.")
 
 
+def _source_startup_bridge(plan: LaunchPlan) -> dict[str, str]:
+    if plan.frozen:
+        return {}
+    from angerona.resilience.source_stop import (
+        SOURCE_LAUNCH_ENV, SOURCE_SESSION_ENV, SourceLaunchStopped,
+        capture_source_launch_intent, join_source_session, source_runtime_admitted,
+    )
+    if not source_runtime_admitted():
+        return {}
+    try:
+        if SOURCE_SESSION_ENV in os.environ:
+            reference = os.environ[SOURCE_SESSION_ENV]
+            context = join_source_session(plan.storage, epoch=reference, role="peer")
+            if context is None or not context.respawn_allowed():
+                raise OperatorStopped("The inherited source session is stopped or held; no fresh epoch was requested.")
+            return {SOURCE_SESSION_ENV: reference}
+        intent = capture_source_launch_intent(plan.storage,
+            automatic=os.environ.get("ANGERONA_SUPERVISED_RECOVERY") == "1")
+        if intent is None:
+            raise StartupError("Canonical source launch admission is unavailable.")
+        return {SOURCE_LAUNCH_ENV: intent}
+    except SourceLaunchStopped as error:
+        raise OperatorStopped(str(error)) from None
+    except (OSError, ValueError) as error:
+        raise StartupError("Source launch state could not be verified; existing state was preserved.") from error
+
+
+def _source_startup_bridge_current(plan: LaunchPlan, bridge: dict[str, str]) -> bool:
+    from angerona.resilience.source_stop import (
+        SOURCE_SESSION_ENV, SOURCE_LAUNCH_ENV, join_source_session, source_launch_intent_current,
+    )
+    if SOURCE_SESSION_ENV in bridge:
+        context = join_source_session(plan.storage, epoch=bridge[SOURCE_SESSION_ENV], role="peer")
+        return context is not None and context.respawn_allowed()
+    return source_launch_intent_current(plan.storage, bridge[SOURCE_LAUNCH_ENV])
+
+
 def run_startup(report: Callable[[str], None], cancel: threading.Event, *, setup: bool = False,
                 check_only: bool = False, _interface_lease: StartupLease | None = None,
                 software_renderer: bool = False, operator_elevation: bool = False) -> Path:
@@ -1469,6 +1506,9 @@ def run_startup(report: Callable[[str], None], cancel: threading.Event, *, setup
     _STARTUP_CONTEXT.storage = plan.storage
     plan = replace(plan, rendering="software" if software_renderer else "default",
                    operator_elevation=operator_elevation)
+    # Capture before storage/dependency warmup. This is read-only intent, never
+    # Core admission: only the singleton-owning child may consume unchanged state.
+    source_bridge = _source_startup_bridge(plan) if not check_only else {}
     critical = None
     _STARTUP_CONTEXT.critical_scratch_lease = None
     try:
@@ -1527,7 +1567,11 @@ def run_startup(report: Callable[[str], None], cancel: threading.Event, *, setup
             clear_standdown_for_storage, standdown_active_for_storage,
         )
         if not plan.frozen:
-            if os.environ.get("ANGERONA_SUPERVISED_RECOVERY") == "1":
+            if source_bridge:
+                if not _source_startup_bridge_current(plan, source_bridge):
+                    raise OperatorStopped("Source STOP or session state changed during preflight; startup remains held.")
+                environment.update(source_bridge)
+            elif os.environ.get("ANGERONA_SUPERVISED_RECOVERY") == "1":
                 if standdown_active_for_storage(plan.storage):
                     raise OperatorStopped("Authenticated STOP is active; automatic startup remains stopped.")
             else:
@@ -1583,7 +1627,16 @@ def run_startup(report: Callable[[str], None], cancel: threading.Event, *, setup
             try:
                 ready_pid = wait_dashboard(listener, process, plan, started, cancel)
             except StartupError:
-                if not plan.frozen and standdown_active_for_storage(plan.storage):
+                source_stopped = False
+                if source_bridge:
+                    from angerona.resilience.source_stop import capture_source_launch_intent, SourceLaunchStopped
+                    try:
+                        capture_source_launch_intent(plan.storage, automatic=True)
+                    except SourceLaunchStopped:
+                        source_stopped = True
+                    except (OSError, ValueError):
+                        pass  # Preserve the original readiness/coverage failure.
+                if source_stopped or not source_bridge and not plan.frozen and standdown_active_for_storage(plan.storage):
                     raise OperatorStopped("Authenticated STOP was requested during startup; no retry will reopen the dashboard.") from None
                 raise
             identity = (process_identity(process) if ready_pid == process.pid else
@@ -1675,7 +1728,9 @@ def main() -> int:
             try:
                 plan = platform_plan()
                 from angerona.resilience.shutdown_token import standdown_active_for_storage
-                if standdown_active_for_storage(plan.storage):
+                from angerona.resilience.source_stop import source_runtime_admitted
+                source_domain = not plan.frozen and source_runtime_admitted()
+                if not source_domain and standdown_active_for_storage(plan.storage):
                     print("Authenticated STOP is active; automatic startup remains stopped.")
                     return 86 if supervised or plan.frozen else 0
             except Exception as exc:

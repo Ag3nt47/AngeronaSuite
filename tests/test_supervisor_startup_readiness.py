@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+import os
 import threading
 
 import pytest
 
 from angerona.resilience import supervisor
+from test_child_job_owned_identities import inert_child_factory as inert_child_factory
+from test_ollama_owned_retirement import owned as owned
 
 
 class HeartbeatPath:
@@ -301,14 +304,33 @@ def test_an_unowned_pid_never_acquires_a_startup_window(harness):
     assert h.component._startup is None
 
 
-def test_stop_stands_down_then_uses_existing_owned_cleanup(harness):
-    h = harness
-    h.instance._stop.set()
-    assert h.instance.tick() == {"core": "standdown"}
-    assert len(h.launches) == 1 and not h.component._failures
-    h.instance.stop()
-    assert h.launches[0].terminations == 1
-    assert h.component.proc is None and h.component._startup is None
+@pytest.mark.skipif(os.name != "nt", reason="Windows exact retained Job STOP custody")
+def test_stop_stands_down_then_uses_existing_owned_cleanup(owned, monkeypatch):
+    # The readiness harness's Child is deliberately a presentation/state stub.
+    # An owns_descendants attribute cannot prove native STOP authority. Exercise
+    # the real owner, member-signal and close protocol with inert kernel tokens.
+    sample = owned.make(register=False)
+    instance = supervisor.ProcessSupervisor(monotonic_clock=lambda: owned.clock[0])
+    component = supervisor.Component(
+        name="core", argv=[sample.native.identities[sample.owner.pid].image, "-m", "angerona"],
+        reader=Reader(), proc=sample.owner,
+    )
+    instance.components["core"] = component
+    monkeypatch.setattr(supervisor.tok, "is_standdown_requested", lambda: False)
+    monkeypatch.setattr(instance, "_pop_restart_requests", lambda: set())
+    instance._arm_startup(component)
+    assert component._startup is not None and component._startup.identity is not None
+    custody = instance.capture_retirement_custody()
+    instance.request_stop()
+    assert instance.tick() == {"core": "standdown"}
+    assert sample.model.termination_calls == [] and not component._failures
+    assert instance.stop() is True
+    assert sample.model.termination_calls == [1]
+    assert component.proc is None and component._startup is None
+    assert instance.shutdown_retired(custody)
+    proof = sample.owner.tree_retirement_snapshot()
+    assert proof["signals_proven"] is True and proof["handles_closed"] is True
+    assert sample.root.closes == sample.job_lifetime.closes == 1
 
 
 def test_authenticated_manual_restart_can_replace_the_held_owned_generation(harness, monkeypatch):

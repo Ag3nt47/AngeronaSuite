@@ -38,6 +38,17 @@ _WATCHDOG_STALE_AFTER_SECONDS = 10.0
 _SOURCE_REVIEW_INTERVAL_SECONDS = 60.0
 
 
+def _source_context_standdown(context) -> bool:
+    """Only authenticated STOP or verified newer-family supersession may exit."""
+    try:
+        if context.is_stop_requested() is True:
+            return True
+        superseded = getattr(context, "is_superseded", None)
+        return callable(superseded) and superseded() is True
+    except Exception:
+        return False  # Unknown coordination can hold respawn, never forge exit intent.
+
+
 class _OwnedSelfTestProcesses:
     """Exact process custody for the manager's detached lifecycle self-test."""
 
@@ -145,20 +156,23 @@ def _pythonw() -> str:
     return exe
 
 
-def _cmdline_probe(*needles: str, expected_argv=None) -> Callable[[], bool]:
-    return cached_cmdline_probe(*needles, expected_argv=expected_argv)
+def _cmdline_probe(*needles: str, expected_argv=None, source_stop_context=None) -> Callable[[], bool]:
+    return cached_cmdline_probe(*needles, expected_argv=expected_argv,
+                                source_stop_context=source_stop_context)
 
 
 class ResilienceManager:
     def __init__(self, bus=None, heartbeat_interval: float = 0.5,
                  ring_interval: float = 0.5, start_watchdog: bool = True,
-                 with_ui: bool = True, on_frame: Optional[Callable[[dict], None]] = None, config=None):
+                 with_ui: bool = True, on_frame: Optional[Callable[[dict], None]] = None, config=None,
+                 source_stop_context=None):
         self.bus = bus
         self.heartbeat_interval = heartbeat_interval
         self.ring_interval = ring_interval
         self.start_watchdog = start_watchdog
         self.with_ui = with_ui
         self.on_frame = on_frame
+        self._source_stop_context = source_stop_context
         self._core_beat = hb.HeartbeatWriter("core")
         self._unsigned_watchdog_enabled = getattr(config, "watchdog3_unsigned_enabled", False) is True
         self._unsigned_watchdog = None
@@ -172,14 +186,21 @@ class ResilienceManager:
                                "rejection_observations": 0, "missed_frames_lower_bound": 0,
                                "close_unresolved": False, "state_scope": "ring transport",
                                "freshness_scope": "process-local; v2 restart rollback unverified"}
+        supervisor_options = {}
+        if source_stop_context is not None:
+            supervisor_options["source_stop_context"] = source_stop_context
         self._sup = ProcessSupervisor(
             poll_interval=1.0,
             on_event=self._sup_event,
             state_namespace="core-manager",
+            **supervisor_options,
         )
         self._stop = threading.Event()
         self._shutdown_lock = threading.RLock()
         self._closed = False
+        self._shutdown_requested = False
+        self._retirement_errors = set()
+        self._retirement_custody = None
         self._threads: list[threading.Thread] = []
         self.frames_ingested = 0
         self.frames_rejected = 0
@@ -193,7 +214,8 @@ class ResilienceManager:
 
     def _start_optional_native_watchdog(self) -> None:
         """An optional monitor must never prevent existing Core resilience startup."""
-        if not getattr(self, "_unsigned_watchdog_enabled", False):
+        stopped = getattr(self, "_stop", None)
+        if stopped is not None and stopped.is_set() or not getattr(self, "_unsigned_watchdog_enabled", False):
             return
         try:
             from angerona.resilience.native_watchdog import UnsignedWatchdogMonitor, third_watchdog_status
@@ -295,6 +317,18 @@ class ResilienceManager:
 
     # ── lifecycle ────────────────────────────────────────────────────────────
     def start(self) -> None:
+        # STOP fences immediately through request_stop; its cleanup then waits
+        # for this exact admission pass. A monitor/thread cannot commit after
+        # final retirement has already been reported.
+        with self._shutdown_lock:
+            self._start_locked()
+
+    def _start_locked(self) -> None:
+        if self._shutdown_requested:
+            return
+        context = getattr(self, "_source_stop_context", None)
+        if context is not None and context.respawn_allowed() is not True:
+            return
         self._stop.clear()
         # Optional ring admission runs on its worker; corrupt transport must
         # not prevent heartbeat/supervision startup. Never reset existing bytes.
@@ -388,7 +422,8 @@ class ResilienceManager:
         bb = blackbox_entry
         if bb is not None and blackbox_enabled:
             self._sup.add("blackbox", [pyw, str(bb)], window="hidden",
-                          running_probe=_cmdline_probe("blackbox_recorder.py", expected_argv=[pyw, str(bb)]))
+                          running_probe=_cmdline_probe("blackbox_recorder.py", expected_argv=[pyw, str(bb)],
+                              source_stop_context=context))
 
         # 4) Themed monitor windows (present a component's status; lean readers).
         if self.with_ui:
@@ -397,7 +432,8 @@ class ResilienceManager:
                            "--title", "Angerona - Watchdog"],
                           window="hidden",
                           running_probe=_cmdline_probe("status_ui", "watchdog",
-                              expected_argv=[pyw, "-m", "angerona.resilience.status_ui", "watchdog"]))
+                              expected_argv=[pyw, "-m", "angerona.resilience.status_ui", "watchdog"],
+                              source_stop_context=context))
             # Telemetry Scanner monitor window. The scanner PROCESS itself runs
             # headless (ANGERONA_SCANNER_UI=0) for reliability — its old inline
             # QApplication was heavy and flaky and pushed it into SAFE_MODE. So the
@@ -410,7 +446,8 @@ class ResilienceManager:
                            "--title", "Angerona - Telemetry Scanner"],
                           window="hidden",
                           running_probe=_cmdline_probe("status_ui", "scanner",
-                              expected_argv=[pyw, "-m", "angerona.resilience.status_ui", "scanner"]))
+                              expected_argv=[pyw, "-m", "angerona.resilience.status_ui", "scanner"],
+                              source_stop_context=context))
 
         self._sup.start()          # adopt-if-alive: never double-spawns
 
@@ -420,15 +457,21 @@ class ResilienceManager:
                       "core heartbeat beating, ring draining.", "INFO")
 
     def _spawn_thread(self, target, name):
+        if self._stop.is_set() or self._shutdown_requested:
+            return
         t = threading.Thread(target=target, name=name, daemon=True)
         t.start()
         self._threads.append(t)
 
     def _heartbeat_loop(self):
         while not self._stop.wait(self.heartbeat_interval):
+            context = getattr(self, "_source_stop_context", None)
+            if context is not None and _source_context_standdown(context):
+                self.request_stop()
+                break
             if self._sup.heartbeat_allowed():
                 self._core_beat.beat()
-            if tok.is_standdown_requested():
+            if context is None and tok.is_standdown_requested():
                 self._publish("Resilience Manager", "Stand-down token present — stopping.", "MEDIUM")
                 self.stop()
                 return
@@ -867,6 +910,8 @@ class ResilienceManager:
         self._source_update_controller = owner
 
     def _component_heartbeat_loop(self):
+        if not hasattr(self, "_retirement_errors"):
+            self._retirement_errors = set()
         cache = self._component_heartbeat_cache
         if cache is None:
             return
@@ -904,48 +949,131 @@ class ResilienceManager:
             try:
                 cache.close()
             except Exception as exc:
+                self._retirement_errors.add("heartbeat-observer-close")
                 self._publish("Component Heartbeats", "Read-only native observation handles could not all be released.",
                               "LOW", {"error_type": type(exc).__name__})
             if external is not None and external_started:
                 try:
                     external.heartbeat_close()
                 except Exception as exc:
+                    self._retirement_errors.add("source-observer-close")
                     self._publish("Source Update Progress", "Local observer query cleanup remains held.",
                                   "LOW", {"error_type": type(exc).__name__})
 
     def request_stop(self) -> None:
+        if not hasattr(self, "_retirement_errors"):
+            self._retirement_errors = set()
+        self._shutdown_requested = True
         self._stop.set()
+        # Fence all replacement admission first. An optional observer failure
+        # must never prevent the main peer supervisor receiving STOP.
+        self._sup.request_stop()
         monitor = getattr(self, "_unsigned_watchdog", None)
         if monitor is not None:
-            monitor.request_stop()
+            try:
+                monitor.request_stop()
+            except Exception:
+                self._retirement_errors.add("native-monitor-stop")
         external = getattr(self, "_source_update_controller", None)
         if external is not None:
             try:
                 external.heartbeat_stop()
             except Exception as exc:
                 self._source_update_observer_error = type(exc).__name__
+                self._retirement_errors.add("source-observer-stop")
         cache = self._component_heartbeat_cache
         if cache is not None:
-            cache.mark_stopped()
-        self._sup.request_stop()
+            try:
+                cache.mark_stopped()
+            except Exception:
+                self._retirement_errors.add("heartbeat-observer-stop")
 
-    def stop(self, terminate_children: bool = False) -> None:
+    def capture_retirement_custody(self):
+        """Capture exact local owners before request_stop hides diagnostics.
+
+        This retained reference is for completion checking, not a grant of
+        process or installed-service authority.
+        """
+        with self._shutdown_lock:
+            custody = getattr(self, "_retirement_custody", None)
+            if custody is not None:
+                return custody
+            custody = (self, self._sup, self._sup.capture_retirement_custody(),
+                       getattr(self, "_unsigned_watchdog", None),
+                       getattr(self, "_source_update_controller", None))
+            # Retain the original pre-token owner cut. Later cleanup retries
+            # must not reopen handles, rediscover actors or replace identities
+            # merely because some peers have already honored STOP and exited.
+            self._retirement_custody = custody
+            return custody
+
+    def shutdown_retired(self, custody) -> bool:
+        """True only for actual owned work retirement, never status/PID loss."""
+        try:
+            owner, supervisor, peer_custody, monitor, observer = custody
+            if (owner is not self or supervisor is not self._sup or not self._closed
+                    or not self._shutdown_requested or self._retirement_errors
+                    or monitor is not getattr(self, "_unsigned_watchdog", None)
+                    or observer is not getattr(self, "_source_update_controller", None)
+                    or not supervisor.shutdown_retired(peer_custody)):
+                return False
+            if any(thread.is_alive() for thread in self._threads):
+                return False
+            if monitor is not None:
+                if getattr(monitor, "_start_custody_held", True):
+                    return False
+                thread = getattr(monitor, "_thread", None)
+                if thread is not None and thread.is_alive():
+                    return False
+                # The monitor owns native close/error state separately from its
+                # worker lifetime. A stopped thread alone does not prove it.
+                from angerona.resilience import native_watchdog
+
+                if (native_watchdog._OBSERVE_OWNER is monitor
+                        or native_watchdog._OBSERVE_START_HOLD is monitor):
+                    return False
+            return True
+        except Exception:
+            return False
+
+    def stop(self, terminate_children: bool = False) -> bool:
+        try:
+            custody = self.capture_retirement_custody()
+        except Exception:
+            custody = None
+            if not hasattr(self, "_retirement_errors"):
+                self._retirement_errors = set()
+            self._retirement_errors.add("peer-retirement-custody")
         self.request_stop()
         with self._shutdown_lock:
             monitor = getattr(self, "_unsigned_watchdog", None)
             if monitor is not None:
-                monitor.stop()
+                try:
+                    monitor.stop()
+                except Exception:
+                    self._retirement_errors.add("native-monitor-close")
             try:
                 self._sup.stop(terminate_children=terminate_children)
+            except Exception:
+                self._retirement_errors.add("peer-supervisor-close")
             finally:
                 if not self._closed:
                     self._closed = True
                     try:
                         self._core_beat.close()
-                    finally:
-                        if self._reader:
+                    except Exception:
+                        self._retirement_errors.add("core-heartbeat-close")
+                    if self._reader:
+                        try:
                             self._reader.close()
-                        self.status = "stopped"
+                        except Exception:
+                            self._retirement_errors.add("telemetry-ring-close")
+        for thread in tuple(self._threads):
+            if thread is not threading.current_thread():
+                thread.join(timeout=1.0)
+        retired = self.shutdown_retired(custody)
+        self.status = "stopped" if retired else "shutdown-pending"
+        return retired
 
 
 def start_resilience(bus=None, *, source_update_controller=None, **kw) -> ResilienceManager:

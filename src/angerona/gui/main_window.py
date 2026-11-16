@@ -298,6 +298,8 @@ class MainWindow(QMainWindow):
         shutdown_prepare=None,
         shutdown_callback=None,
         shutdown_critical=None,
+        shutdown_companions_retired=None,
+        shutdown_retired_callback=None,
         red_team_console_factory=None,
     ) -> None:
         super().__init__()
@@ -305,6 +307,12 @@ class MainWindow(QMainWindow):
         self._shutdown_prepare = shutdown_prepare
         self._shutdown_callback = shutdown_callback
         self._shutdown_critical = shutdown_critical
+        self._shutdown_companions_retired = shutdown_companions_retired
+        self._shutdown_retired_callback = shutdown_retired_callback
+        self._operator_stop_locked = False
+        self._termination_preparing = False
+        self._operator_stop_preparation = None
+        self._stop_confirmation_dialog = None
         # Explicit embedding/fixture seam, never a saved setting or IPC input.
         # Ordinary application startup launches the separate bundled tool.
         self._red_team_console_factory = red_team_console_factory
@@ -7276,15 +7284,8 @@ class MainWindow(QMainWindow):
             )
 
     def _quit(self) -> None:
-        """Tray → Quit. Must guarantee the process actually dies and releases
-        the single-instance lock (core/singleton.py's loopback socket) —  a
-        bare QApplication.quit() only *requests* the Qt event loop stop; if
-        anything (a module thread blocked in a native call, the tray icon,
-        whatever) keeps the interpreter from winding down afterward, the
-        process lingers, the lock socket stays bound, and the NEXT launch
-        shows 'Angerona already running' even though the user already quit.
-        Always finish with an immediate self-exit so that can't happen."""
-        self._terminate()
+        """Tray Quit uses the same session lock and confirmation as header STOP."""
+        self._full_shutdown()
 
     def _shutdown_view_owners(self):
         """Bounded references to owned views, never process/name discovery."""
@@ -7454,6 +7455,8 @@ class MainWindow(QMainWindow):
             for worker in app_owner.source_update_observer_workers():
                 retain("source-update-identity-observer", worker, False,
                        app_owner.source_update_observer_retirement_proven)
+        retain("operator-stop-preparation",
+               getattr(getattr(self, "_operator_stop_preparation", None), "thread", None), True)
         retain("self-test", getattr(self, "_selftest_thread", None), True)
         retain("self-test-repair", getattr(self, "_selftest_repair_thread", None), True)
         retain("flight-instructor", getattr(getattr(self, "_fi_coaching_worker", None), "thread", None))
@@ -7505,6 +7508,13 @@ class MainWindow(QMainWindow):
             if callable(proof):
                 holds.append(RetainedCustody("community-native-custody-" + owner_name, owner,
                              proof))
+        companion_proof = getattr(self, "_shutdown_companions_retired", None)
+        if callable(companion_proof):
+            # The application retains exact native generations. Returning from
+            # its cleanup callback alone is not proof those companions exited.
+            exact_owner = getattr(companion_proof, "__self__", None) or companion_proof
+            holds.append(RetainedCustody("owned-companion-retirement", exact_owner,
+                         companion_proof))
         return tuple(holds)
 
     def _start_owned_report_worker(self, kind, target) -> bool:
@@ -7565,6 +7575,56 @@ class MainWindow(QMainWindow):
 
     def _operator_stop_finish(self, result) -> None:
         self._operator_stop_result = result
+        callback = getattr(self, "_shutdown_retired_callback", None)
+        if (callable(callback) and result.get("state") == "retired"
+                and result.get("forced") is False and result.get("pending_workers") == []
+                and result.get("pending_custody") == []):
+            if getattr(self, "_operator_stop_finalize_job", None) is not None:
+                return
+            from angerona.gui.stop_controls import StopPreparation
+            # All GUI work has retired. This one new retained worker may write
+            # the source epoch receipt; native identity/file work stays off Qt.
+            detached = dict(result)
+            self._operator_stop_finalize_deadline = time.monotonic() + 8.0
+            job = self._operator_stop_finalize_job = StopPreparation(
+                lambda: callback(detached), name="OperatorStopFinalize")
+            timer = self._operator_stop_finalize_timer = QTimer(self)
+            timer.setInterval(50)
+            timer.timeout.connect(self._poll_stop_finalization)
+            job.start()
+            timer.start()
+            self._poll_stop_finalization()
+            return
+        self._operator_stop_exit_after_retirement(result)
+
+    def _poll_stop_finalization(self) -> None:
+        job = getattr(self, "_operator_stop_finalize_job", None)
+        if job is None:
+            return
+        if not job.retired():
+            if time.monotonic() < self._operator_stop_finalize_deadline:
+                return
+            self._operator_stop_finalize_timer.stop()
+            result = dict(self._operator_stop_result)
+            result.update(state="forced-incomplete", forced=True,
+                          retirement_callback_completed=False,
+                          retirement_callback_error_type="finalization-worker-pending",
+                          pending_workers=[*result.get("pending_workers", []),
+                                           "source-stop-finalization"])
+            self._operator_stop_result = result
+            self._operator_stop_exit_after_retirement(result)
+            return
+        self._operator_stop_finalize_timer.stop()
+        result = dict(self._operator_stop_result)
+        result["retirement_callback_completed"] = job.succeeded
+        if not job.succeeded:
+            # Persistent STOP remains valid if the optional clean-epoch receipt
+            # cannot be written. Never reinterpret this as a successful receipt.
+            result["retirement_callback_error_type"] = job.error_name or "unverified result"
+        self._operator_stop_result = result
+        self._operator_stop_exit_after_retirement(result)
+
+    def _operator_stop_exit_after_retirement(self, result) -> None:
         forced = result.get("forced") is True
         if not forced:
             try:
@@ -7585,31 +7645,69 @@ class MainWindow(QMainWindow):
         exit_after_operator_shutdown()
 
     def _terminate(self) -> None:
-        """Record STOP, fence admission, then poll exact workers without joining Qt."""
-        if self._termination_started:
+        """Authorize off the GUI thread; authenticated peer STOP bypasses UI lock."""
+        if (getattr(self, "_termination_started", False)
+                or getattr(self, "_termination_preparing", False)):
             return
-        try:
-            if self._shutdown_prepare is not None:
-                self._shutdown_prepare()
-            else:
+        from angerona.gui.stop_controls import StopPreparation
+        prepare = getattr(self, "_shutdown_prepare", None)
+        if prepare is None:
+            def prepare():
                 from angerona.core.ollama_lifecycle import begin_ollama_shutdown
                 from angerona.resilience.shutdown_token import request_operator_stop
                 request_operator_stop()
                 begin_ollama_shutdown()
-        except Exception as error:
-            if type(error).__name__ == "AdminApprovalRequired":
-                QMessageBox.information(self, "STOP authorization held",
-                    "Shutdown authorization could not be established, and Angerona has not exited. "
-                    "In source/development mode, this protected STOP path requires a verified "
-                    "installed control package. Review the control authority before retrying. "
-                    "This notice does not verify the current protection status.")
-                return
-            QMessageBox.critical(self, "Angerona could not record STOP",
-                "STOP could not be completed, so Angerona has not exited. "
-                "If STOP was already recorded, protection may be partially paused. "
-                "Check free disk space and storage permissions, then retry STOP.\n\n"
-                + type(error).__name__)
+        # Latch before starting: repeated clicks or peer notifications cannot
+        # overlap authority requests, even while the first worker is blocked.
+        self._termination_preparing = True
+        self._operator_stop_preparation = StopPreparation(prepare)
+        question = getattr(self, "_stop_confirmation_dialog", None)
+        if question is not None and isValid(question):
+            question.set_busy("Preparing STOP authorization. Please wait; this operation cannot be cancelled.")
+        timer = getattr(self, "_operator_stop_prepare_timer", None)
+        if timer is None:
+            timer = self._operator_stop_prepare_timer = QTimer(self)
+            timer.setInterval(50)
+            timer.timeout.connect(self._poll_stop_preparation)
+        self._operator_stop_preparation.start()
+        timer.start()
+        self._poll_stop_preparation()
+
+    def _poll_stop_preparation(self) -> None:
+        preparation = getattr(self, "_operator_stop_preparation", None)
+        if not getattr(self, "_termination_preparing", False) or preparation is None:
             return
+        if not preparation.retired():
+            return
+        self._operator_stop_prepare_timer.stop()
+        self._termination_preparing = False
+        if not preparation.succeeded:
+            # No UI/reader/mutation admission is closed on authorization failure.
+            # The retained modeless dialog permits retry and keeps its lock usable.
+            self._full_shutdown()
+            question = self._stop_confirmation_dialog
+            if preparation.authorization_held:
+                question.set_failure(
+                    "STOP authorization is held; Angerona has not exited. Source sessions "
+                    "need their own verified session STOP context. Protected installations "
+                    "need their enrolled control authority. Review startup/control diagnostics "
+                    "and retry. Changing this UI lock grants no additional authority.")
+            else:
+                question.set_failure(
+                    "STOP preparation failed (" + (preparation.error_name or "unverified result")
+                    + "). Angerona has not exited. If STOP intent was already recorded, "
+                    "protection may be partially paused. Review storage and control diagnostics, "
+                    "then confirm STOP again to retry.")
+            return
+        self._complete_prepared_stop()
+
+    def _complete_prepared_stop(self) -> None:
+        """Only actual authorization-thread retirement admits owned teardown."""
+        if getattr(self, "_termination_started", False):
+            return
+        question = getattr(self, "_stop_confirmation_dialog", None)
+        if question is not None and isValid(question):
+            question.set_busy("STOP accepted. Retiring Angerona's owned components; automatic recovery is inhibited.")
         self._termination_started = True
         reveal = getattr(self, "_panel_reveal", None)
         if reveal is not None:
@@ -7639,50 +7737,53 @@ class MainWindow(QMainWindow):
         self._operator_stop_retirement.start()
 
     def _full_shutdown(self) -> None:
-        """Red STOP: persist operator intent and retire owned suite resources."""
-        from PySide6.QtWidgets import QMessageBox
+        """Show one modeless STOP control; opening, locking or closing never stops."""
+        from angerona.gui.stop_controls import StopControlsDialog
         from angerona.gui.telemetry_storage_controls import telemetry_pending_text, telemetry_storage_snapshot
+        question = getattr(self, "_stop_confirmation_dialog", None)
+        if question is not None and isValid(question):
+            if not question.isVisible() and not getattr(self, "_termination_preparing", False):
+                question.set_locked(getattr(self, "_operator_stop_locked", False))
+                question.reset_confirmation()
+            question.show()
+            question.raise_()
+            question.activateWindow()
+            return
         if getattr(self, "_termination_started", False):
             return
-        previous = getattr(self, "_stop_confirmation_dialog", None)
-        if previous is not None and isValid(previous):
-            previous.raise_()
-            previous.activateWindow()
-            return
+        question = StopControlsDialog(self)
+        question.set_locked(getattr(self, "_operator_stop_locked", False))
         pending = telemetry_storage_snapshot(getattr(self, "storage", None))
-        pending_note = (telemetry_pending_text(pending) + "\n\n"
-                        if pending is None or pending["storage_pending_events"] else "")
-        question = QMessageBox(self)
-        question.setObjectName("OperatorStopConfirmation")
-        question.setWindowTitle("Stop Angerona")
-        question.setTextFormat(Qt.PlainText)
-        question.setIcon(QMessageBox.Question)
-        question.setWindowModality(Qt.ApplicationModal)
-        # Security consent must never acquire a decorative mask or wait behind
-        # another window's opening/closing transition. Set both flags before Show.
-        question.setProperty("_angerona_no_reveal", True)
-        question.setProperty("_angerona_security_prompt", True)
-        question.setText(
-            "Stop protection, unload Angerona's local AI models, stop its owned "
-            "AI services and watchdogs, and exit. Automatic recovery remains "
-            "stopped until you launch Angerona again.\n\n"
-            "A shared Ollama server remains running. Unloading a shared model "
-            "also releases its residency for other apps. Downloaded model files "
-            "are kept.\n\n" + pending_note + "Continue?")
-        question.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
-        question.setDefaultButton(QMessageBox.No)
-        question.setEscapeButton(QMessageBox.No)
+        question.set_pending_text(telemetry_pending_text(pending)
+            if pending is None or pending["storage_pending_events"] else "")
+        question.lock_changed.connect(self._set_operator_stop_locked)
+        question.stop_requested.connect(self._confirm_operator_stop)
         self._stop_confirmation_dialog = question
-        try:
-            reply = question.exec()
-        finally:
-            if getattr(self, "_stop_confirmation_dialog", None) is question:
-                self._stop_confirmation_dialog = None
-            if isValid(question):
-                question.deleteLater()
-        if reply != QMessageBox.Yes:
-            return
+        if getattr(self, "_termination_preparing", False):
+            question.set_busy("Preparing STOP authorization. Please wait; this operation cannot be cancelled.")
+        question.show()
+        question.raise_()
+        question.activateWindow()
 
+    def _set_operator_stop_locked(self, locked: bool) -> None:
+        if (getattr(self, "_termination_started", False)
+                or getattr(self, "_termination_preparing", False)):
+            return
+        self._operator_stop_locked = bool(locked)
+        question = getattr(self, "_stop_confirmation_dialog", None)
+        if question is not None and isValid(question):
+            question.set_locked(self._operator_stop_locked)
+
+    def _confirm_operator_stop(self) -> None:
+        question = getattr(self, "_stop_confirmation_dialog", None)
+        # Recheck the owner's current lock and the exact retained question. A
+        # queued/stale signal cannot reuse a confirmation made before locking.
+        if (getattr(self, "_operator_stop_locked", False)
+                or getattr(self, "_termination_preparing", False)
+                or getattr(self, "_termination_started", False)
+                or question is None or not isValid(question)
+                or not question.isVisible() or not question.stop_confirmed()):
+            return
         self._terminate()
 
     def _place_header_navigation(self, layout, navigation, columns: int) -> None:

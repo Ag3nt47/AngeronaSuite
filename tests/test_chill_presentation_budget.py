@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -236,8 +237,17 @@ def test_floating_orb_stops_idle_frames_in_chill_but_manual_services_stay_live(m
     orb._tick.timeout.connect(lambda: ticks.append(1))
     orb.serviceTriggered.connect(selected.append)
     orb.show_token()
+
+    def wait_for_frame(after):
+        # Observe a real timer delivery rather than assuming the first paint
+        # and event scheduling complete within 160 ms under competing test I/O.
+        deadline = time.monotonic() + 2.0
+        while len(ticks) <= after and time.monotonic() < deadline:
+            QTest.qWait(20)
+        assert len(ticks) > after
+
     try:
-        QTest.qWait(160)
+        wait_for_frame(0)
         assert orb._tick.isActive() and ticks
         set_chill_presentation(True)
         before = len(ticks)
@@ -251,7 +261,7 @@ def test_floating_orb_stops_idle_frames_in_chill_but_manual_services_stay_live(m
         assert len(ticks) == before and orb._phase == phase
         set_chill_presentation(False)
         assert orb._tick.isActive()
-        QTest.qWait(100)
+        wait_for_frame(before)
         assert len(ticks) > before
     finally:
         orb.hide_token()
