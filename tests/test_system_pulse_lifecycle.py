@@ -292,6 +292,8 @@ def test_connection_kind_is_portable(name, platform, ports, expected):
 
 
 def test_active_connection_prefers_default_route_over_higher_background_traffic(monkeypatch):
+    # darwin_ports only applies on macOS; pin the platform so the test is host-independent.
+    monkeypatch.setattr(system_pulse.sys, "platform", "darwin")
     monkeypatch.setattr(system_pulse, "_preferred_local_ip", lambda: "10.0.0.25")
     stats = {"en0": SimpleNamespace(isup=True), "en7": SimpleNamespace(isup=True)}
     addresses = {
