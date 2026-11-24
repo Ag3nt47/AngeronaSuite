@@ -5,7 +5,7 @@ import threading
 import re
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
 
@@ -16,7 +16,8 @@ from shiboken6 import isValid
 
 from angerona.gui.async_snapshot import AsyncSnapshot
 from angerona.gui.action_progress import ActionActivities
-from angerona.updater.github_updater import UpdateReport, check_installed_updates
+from angerona.updater.github_updater import (UpdateReport, check_installed_updates,
+                                             recall_installed_update)
 from angerona.updater.github_tool_updates import check_and_apply_github_tools
 from angerona.updater.source_stage import prepare_source_update
 
@@ -28,6 +29,7 @@ class _Delivery:
     epoch: int
     serial: int
     tools: object | None = None
+    recalled: bool = False
 
 
 def _revoke(event: threading.Event, *_args) -> None:
@@ -44,16 +46,26 @@ def _read_check(
     data_root: Path,
     tools_enabled: bool,
     allow_download: bool,
+    recall: bool = False,
 ) -> _Delivery:
     report = check_installed_updates(state, root, force=origin == "manual")
+    recalled = False
+    if recall and origin == "daily" and report.status == "not_due":
+        # A restart inside the daily interval makes no request, so the notice
+        # raised by the original attempt would stay hidden until tomorrow.
+        previous = recall_installed_update(state, root)
+        if previous is not None:
+            note = "Shown again from the most recent daily check; no new request was made."
+            report = replace(previous, message=f"{previous.message} {note}".strip())
+            recalled = True
     tools = None
-    if tools_enabled and report.status in {"checked", "partial"}:
+    if tools_enabled and not recalled and report.status in {"checked", "partial"}:
         tools = check_and_apply_github_tools(
             data_root,
             allow_download=allow_download,
             apply_managed=True,
         )
-    return _Delivery(report, origin, epoch, serial, tools)
+    return _Delivery(report, origin, epoch, serial, tools, recalled)
 
 
 def _read_stage(root: Path, staging: Path, target: str, cancelled: threading.Event) -> dict:
@@ -524,6 +536,7 @@ class UpdateController(QObject):
         self._origin = "daily"
         self._epoch = 0
         self._manual_claimed = False
+        self._recall_pending = True
         self._daily_allowed = self._daily_preference()
         self._target = ""
         self._closed = False
@@ -632,7 +645,8 @@ class UpdateController(QObject):
                        Path(self._config.data_dir),
                        bool(getattr(self._config, "github_tools_enabled", False)
                             and getattr(self._config, "github_tools_daily_update_enabled", False)),
-                       bool(getattr(self._config, "github_tools_allow_download", True)))
+                       bool(getattr(self._config, "github_tools_allow_download", True)),
+                       self._origin == "daily" and self._recall_pending)
 
     def prompt_eligible(self, report: UpdateReport) -> bool:
         return (self.alive() and report is self._last_report and self._last_serial == self._serial
@@ -651,7 +665,8 @@ class UpdateController(QObject):
             return  # A reentrant receiver started a newer operation or closed us.
         manual = self._manual_claimed or delivery.origin == "manual"
         self._manual_claimed = False
-        if manual and delivery.origin == "daily" and delivery.report.status == "not_due":
+        if manual and delivery.origin == "daily" and (
+                delivery.report.status == "not_due" or delivery.recalled):
             # The automatic operation did not fetch. Honor the manual intent
             # through ONE normal force=True attempt, retaining the 60s floor.
             self._origin = "manual"
@@ -664,6 +679,10 @@ class UpdateController(QObject):
                 self.status_changed.emit("Automatic update check completed after opt-out; no report or prompt was delivered.")
             return
         report = delivery.report
+        if delivery.origin == "daily" and (
+                delivery.recalled or report.status in {"not_due", "checked", "partial"}):
+            # One recall per process: hourly not-due ticks stay free of Git work.
+            self._recall_pending = False
         self._last_report = report
         self._last_origin = "manual" if manual else "daily"
         self._last_epoch = delivery.epoch

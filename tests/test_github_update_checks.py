@@ -113,3 +113,69 @@ def test_no_published_release_is_distinct_from_no_updates() -> None:
 def test_compatibility_entrypoint_never_contacts_arbitrary_repository(monkeypatch) -> None:
     monkeypatch.setattr(updates, "discover_updates", lambda **kwargs: pytest.fail("unexpected request"))
     assert "failed" in updates.check_for_updates("attacker/Angerona")
+
+
+def test_restart_recalls_the_available_update_without_a_request_or_write(tmp_path: Path) -> None:
+    first = updates.daily_update_check(tmp_path, now=100, local_revision=BASE, version="1.14.0", fetch=metadata)
+    assert first.available
+    again = updates.daily_update_check(tmp_path, now=200, local_revision=BASE, version="1.14.0",
+                                       fetch=lambda path: pytest.fail("the daily interval forbids a request"))
+    assert again.status == "not_due" and not again.available
+    before = (tmp_path / "check.json").read_bytes()
+    recalled = updates.recall_available_update(tmp_path, version="1.14.0", now=200, revision_reader=lambda: BASE)
+    assert recalled == first and recalled.available and recalled.remote_revision == TARGET
+    assert (tmp_path / "check.json").read_bytes() == before
+
+
+def test_recall_is_withheld_once_the_installation_or_interval_has_moved_on(tmp_path: Path) -> None:
+    updates.daily_update_check(tmp_path, now=100, local_revision=BASE, version="1.14.0", fetch=metadata)
+
+    def recall(**changes):
+        values = {"version": "1.14.0", "now": 200, "revision_reader": lambda: BASE}
+        values.update(changes)
+        return updates.recall_available_update(tmp_path, **values)
+
+    def unreadable():
+        raise OSError("source identity is unavailable")
+
+    assert recall() is not None
+    assert recall(revision_reader=lambda: TARGET) is None  # updated since the attempt
+    assert recall(revision_reader=lambda: "") is None
+    assert recall(revision_reader=unreadable) is None
+    assert recall(revision_reader=None) is None
+    assert recall(version="1.15.0") is None
+    assert recall(now=100 + updates.DAILY_SECONDS) is None  # a real check is due instead
+    assert recall(now=99) is None
+    with ExclusiveFileLease(tmp_path / "check.lock"):
+        assert recall() is None
+
+
+def test_recall_ignores_current_unfinished_malformed_and_absent_outcomes(tmp_path: Path) -> None:
+    absent = tmp_path / "absent"
+    assert updates.recall_available_update(absent, now=10) is None and not absent.exists()
+    current = tmp_path / "current"
+    report = updates.daily_update_check(current, now=100, local_revision=TARGET, version="1.15.0", fetch=metadata)
+    assert report.status == "checked" and not report.available
+    assert updates.recall_available_update(current, version="1.15.0", now=200, revision_reader=lambda: TARGET) is None
+
+    def stored(outcome):
+        root = tmp_path / "stored"
+        root.mkdir(exist_ok=True)
+        (root / "check.json").write_text(json.dumps({
+            "schema": "angerona.github-update-check/v1", "repository": "Ag3nt47/AngeronaSuite",
+            "last_attempt": 100, "outcome": outcome}), encoding="utf-8")
+        return updates.recall_available_update(root, version="1.14.0", now=200, revision_reader=lambda: BASE)
+
+    good = {"status": "checked", "checked_at": 100, "local_version": "1.14.0", "local_revision": BASE,
+            "remote_revision": TARGET, "release_tag": "", "release_status": "none",
+            "source_status": "different", "message": "", "next_check_at": 100 + updates.DAILY_SECONDS}
+    assert stored(good) is not None
+    assert stored("checking") is None
+    assert stored(dict(good, extra=1)) is None
+    assert stored(dict(good, checked_at=50)) is None
+    assert stored(dict(good, status="failed")) is None
+    assert stored(dict(good, remote_revision="main")) is None
+    assert stored(dict(good, source_status="newer")) is None
+    assert stored(dict(good, release_status="newer", release_tag="v1.14.0")) is None
+    assert stored(dict(good, release_status="newer", release_tag="v9.0.0-evil")) is None
+    assert stored(dict(good, message=7)) is None

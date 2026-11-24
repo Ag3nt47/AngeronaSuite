@@ -140,13 +140,68 @@ def local_source_revision(root: Path) -> str:
         return ""
 
 
+def _installed_base(state_dir: Path, source_root: Path) -> str:
+    from angerona.core.source_activation import applied_source_base
+    receipt = applied_source_base(source_root, state_dir)
+    return receipt['target_revision'] if receipt is not None else local_source_revision(source_root)
+
+
 def check_installed_updates(state_dir: Path, source_root: Path, *, force: bool = False) -> UpdateReport:
     """Plain Qt-free reader; inputs may safely be captured by an AsyncSnapshot."""
-    def current_base():
-        from angerona.core.source_activation import applied_source_base
-        receipt = applied_source_base(source_root, state_dir)
-        return receipt['target_revision'] if receipt is not None else local_source_revision(source_root)
-    return daily_update_check(state_dir, force=force, revision_reader=current_base)
+    return daily_update_check(state_dir, force=force,
+                              revision_reader=lambda: _installed_base(state_dir, source_root))
+
+
+def recall_installed_update(state_dir: Path, source_root: Path) -> UpdateReport | None:
+    """Plain Qt-free reader for the update a restart would otherwise hide."""
+    return recall_available_update(state_dir,
+                                   revision_reader=lambda: _installed_base(state_dir, source_root))
+
+
+def recall_available_update(state_dir: Path, *, version: str = __version__, now: float | None = None,
+                            revision_reader: Callable[[], str] | None = None) -> UpdateReport | None:
+    """Return the last completed check's still-current available update, if any.
+
+    The daily interval suppresses a new request after a restart, so the notice
+    raised by the original attempt would stay hidden until the next day. This
+    reads the durable outcome only: no network request, no state write, and no
+    installation authority. Anything unreadable, expired, in flight, or recorded
+    for a different installed version or source revision yields ``None``.
+    """
+    when = time.time() if now is None else now
+    try:
+        if not os.path.lexists(Path(state_dir) / "check.json"):
+            return None
+        root = _safe_state_root(state_dir)
+        with ExclusiveFileLease(root / "check.lock"):
+            state = _read_state(root / "check.json")
+        last, outcome = state.get("last_attempt"), state.get("outcome")
+        if last is None or not isinstance(outcome, dict) or not last <= when < last + DAILY_SECONDS:
+            return None
+        report = UpdateReport(**outcome)
+        text = (report.status, report.local_version, report.local_revision, report.remote_revision,
+                report.release_tag, report.release_status, report.source_status, report.message)
+        if (not all(isinstance(value, str) for value in text)
+                or report.status not in {"checked", "partial"} or report.checked_at != last
+                or report.local_version != version or not report.available):
+            return None
+        if report.release_status == "newer":
+            if version_tuple(report.release_tag) <= version_tuple(version):
+                return None
+        elif report.release_status not in {"current", "none", "unavailable"}:
+            return None
+        if report.source_status == "different":
+            # Updating or switching the checkout since the attempt makes the
+            # stored comparison meaningless; identity is read once, on recall.
+            current = revision_reader() if revision_reader is not None else ""
+            if (not _SHA.fullmatch(report.local_revision) or not _SHA.fullmatch(report.remote_revision)
+                    or current != report.local_revision):
+                return None
+        elif report.source_status not in {"same", "unknown", "unavailable"}:
+            return None
+        return report
+    except Exception:
+        return None
 
 
 def discover_updates(*, local_revision: str = "", version: str = __version__,

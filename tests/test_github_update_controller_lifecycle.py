@@ -390,3 +390,59 @@ def test_manual_claim_of_an_automatic_not_due_result_issues_only_one_force_attem
     assert calls == [False, True]
     assert len(fetched) == (1 if manual_status == "checked" else 0)
     assert len(owner.prompts) == (1 if manual_status == "checked" else 0)
+
+
+def _recalling(monkeypatch, check):
+    saved = UpdateReport("checked", 10, "1.14.0", BASE, TARGET, "", "none", "different")
+    recalls = []
+    monkeypatch.setattr(updates, "check_installed_updates", check)
+    monkeypatch.setattr(updates, "recall_installed_update", lambda state, root: recalls.append((state, root)) or saved)
+    monkeypatch.setattr(updates, "check_and_apply_github_tools",
+                        lambda *args, **kwargs: pytest.fail("a recalled report must not start tool updates"))
+    return recalls
+
+
+def test_restart_inside_the_daily_interval_raises_the_saved_notice_once(owned, tmp_path, monkeypatch):
+    calls = []
+
+    def check(state, root, *, force):
+        calls.append(force)
+        return UpdateReport("not_due", 20, "1.14.0", message="Daily interval not elapsed.")
+
+    recalls = _recalling(monkeypatch, check)
+    owner, controller = _owner(owned, tmp_path, enabled=True)
+    owner.config.github_tools_enabled = owner.config.github_tools_daily_update_enabled = True
+    controller.check_daily()
+    _until(lambda: owner._notifications.count == 1)
+    notice = owner._notifications._entries["update-available"]
+    assert notice.title == "Angerona source update available"
+    assert "GitHub main differs" in notice.description and "Shown again" in notice.description
+    assert recalls == [(tmp_path / "github-updates", tmp_path / "source")] and not owner.prompts
+    controller.check_daily()
+    _until(lambda: len(calls) == 2 and not controller._check.busy)
+    assert calls == [False, False] and len(recalls) == 1 and owner._notifications.count == 1
+
+
+def test_manual_claim_of_a_recalled_result_still_makes_one_fresh_attempt(owned, tmp_path, monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+    owned.releases.append(release)
+    calls = []
+    fresh = UpdateReport("checked", 30, "1.14.0", BASE, "c" * 40, "", "none", "different")
+
+    def check(state, root, *, force):
+        calls.append(force)
+        if force:
+            return fresh
+        entered.set()
+        assert release.wait(10)
+        return UpdateReport("not_due", 20, "1.14.0", message="Daily interval not elapsed.")
+
+    _recalling(monkeypatch, check)
+    owner, controller = _owner(owned, tmp_path, enabled=True)
+    controller.check_daily()
+    _until(entered.is_set)
+    controller.check_now()
+    release.set()
+    _until(lambda: len(owner.prompts) == 1)
+    assert calls == [False, True] and "Shown again" not in owner.prompts[0][1]
+    assert owner._update_prompt_revision == "c" * 40
